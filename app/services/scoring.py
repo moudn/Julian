@@ -8,8 +8,7 @@ to SCORED.
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
-from app.models import ICPRule, Lead, LeadState
+from app.models import ICPRule, Lead, LeadState, Organization
 from app.state_machine import transition
 
 
@@ -39,11 +38,12 @@ def _rule_matches(rule: ICPRule, lead: Lead) -> bool:
     return False
 
 
-def score_lead(db: Session, lead: Lead) -> Lead:
-    rules = db.scalars(select(ICPRule).where(ICPRule.active.is_(True))).all()
+def score_lead(db: Session, lead: Lead, org: Organization) -> Lead:
+    rules = db.scalars(select(ICPRule).where(
+        ICPRule.active.is_(True), ICPRule.org_id == org.id)).all()
     lead.score = sum(rule.weight for rule in rules if _rule_matches(rule, lead))
 
-    threshold = get_settings().score_threshold
+    threshold = org.score_threshold
     if lead.state == LeadState.NEW and lead.score >= threshold:
         transition(lead, LeadState.SCORED)
 

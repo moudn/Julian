@@ -18,8 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.calendar import CalendarAdapter
 from app.adapters.email_sender import EmailSenderAdapter
-from app.config import get_settings
-from app.models import BookingStatus, Lead, LeadState, PendingBooking
+from app.models import BookingStatus, Lead, LeadState, Organization, PendingBooking
 from app.state_machine import transition
 
 
@@ -28,10 +27,11 @@ class ScheduleError(Exception):
 
 
 class ScheduleManager:
-    def __init__(self, calendar: CalendarAdapter, email_sender: EmailSenderAdapter):
+    def __init__(self, calendar: CalendarAdapter, email_sender: EmailSenderAdapter,
+                 org: Organization):
         self.calendar = calendar
         self.email_sender = email_sender
-        self.settings = get_settings()
+        self.org = org
 
     def propose_meeting(self, db: Session, lead: Lead,
                         duration_minutes: int = 30, slot_count: int = 3) -> list[datetime]:
@@ -85,12 +85,19 @@ class ScheduleManager:
         if slot_start not in proposed:
             raise ScheduleError("Selected time is not one of the proposed slots")
 
+        rep_email = self.org.sales_rep_email
+        if not rep_email:
+            raise ScheduleError(
+                "No sales_rep_email configured for this organization "
+                "(set it via PATCH /auth/org)"
+            )
         booking = PendingBooking(
+            org_id=self.org.id,
             lead_id=lead.id,
             slot_start=slot_start,
             slot_end=slot_start + timedelta(minutes=duration_minutes),
             status=BookingStatus.AWAITING_APPROVAL,
-            rep_email=self.settings.sales_rep_email,
+            rep_email=rep_email,
         )
         db.add(booking)
         transition(lead, LeadState.AWAITING_APPROVAL)

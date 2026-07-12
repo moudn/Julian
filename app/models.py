@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,12 +37,86 @@ class BookingStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
-class Lead(Base):
-    __tablename__ = "leads"
+class Organization(Base):
+    """A tenant. Every lead, rule, booking, user, and credential belongs to one."""
+
+    __tablename__ = "organizations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
-    email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    # Where booking-approval notifications go for this tenant
+    sales_rep_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    score_threshold: Mapped[float] = mapped_column(Float, default=50.0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    users: Mapped[list["User"]] = relationship(back_populates="organization")
+    google_credential: Mapped["GoogleCredential | None"] = relationship(
+        back_populates="organization", uselist=False
+    )
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str] = mapped_column(String(512))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    organization: Mapped[Organization] = relationship(back_populates="users")
+
+
+class ApiKey(Base):
+    """Bearer credential for API access. Only the SHA-256 hash is stored."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    prefix: Mapped[str] = mapped_column(String(12))  # first chars, for display only
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GoogleCredential(Base):
+    """Per-tenant Google Calendar OAuth tokens (one connection per org)."""
+
+    __tablename__ = "google_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id"), unique=True, index=True
+    )
+    refresh_token: Mapped[str] = mapped_column(Text)
+    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_expiry: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    calendar_id: Mapped[str] = mapped_column(String(255), default="primary")
+    account_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    organization: Mapped[Organization] = relationship(back_populates="google_credential")
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_lead_org_email"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
     company: Mapped[str | None] = mapped_column(String(255), nullable=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -79,6 +154,7 @@ class ICPRule(Base):
     __tablename__ = "icp_rules"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
     field: Mapped[str] = mapped_column(String(64))
     operator: Mapped[str] = mapped_column(String(16))
@@ -99,6 +175,7 @@ class PendingBooking(Base):
     __tablename__ = "pending_bookings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
     slot_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     slot_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
