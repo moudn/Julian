@@ -40,8 +40,11 @@ def _extract_fields(row: dict[str, str]) -> dict[str, Any]:
     return fields
 
 
-def import_leads_csv(db: Session, content: bytes) -> tuple[int, int, list[str]]:
-    """Parse a CSV file and create leads. Returns (imported, skipped, errors)."""
+def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int, list[str]]:
+    """Parse a CSV file and create leads for one organization.
+
+    Returns (imported, skipped, errors).
+    """
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -61,34 +64,37 @@ def import_leads_csv(db: Session, content: bytes) -> tuple[int, int, list[str]]:
             continue
         email = fields.get("email")
         if email and (email in seen_emails
-                      or db.scalar(select(Lead).where(Lead.email == email))):
+                      or db.scalar(select(Lead).where(
+                          Lead.email == email, Lead.org_id == org_id))):
             skipped += 1
             errors.append(f"line {line_number}: duplicate email {email}")
             continue
         if email:
             seen_emails.add(email)
-        db.add(Lead(**fields, source="csv"))
+        db.add(Lead(**fields, source="csv", org_id=org_id))
         imported += 1
 
     db.commit()
     return imported, skipped, errors
 
 
-def upsert_lead(db: Session, data: dict[str, Any]) -> Lead:
-    """Create or update a Lead from normalized external data (e.g. Apollo).
+def upsert_lead(db: Session, data: dict[str, Any], org_id: int) -> Lead:
+    """Create or update one org's Lead from normalized external data (e.g. Apollo).
 
     Matches on email when available; enrichment never clears existing values.
     """
     lead = None
     if data.get("email"):
-        lead = db.scalar(select(Lead).where(Lead.email == data["email"]))
+        lead = db.scalar(select(Lead).where(
+            Lead.email == data["email"], Lead.org_id == org_id))
     if lead is None and data.get("name") and data.get("domain"):
-        lead = db.scalar(
-            select(Lead).where(Lead.name == data["name"], Lead.domain == data["domain"])
-        )
+        lead = db.scalar(select(Lead).where(
+            Lead.name == data["name"], Lead.domain == data["domain"],
+            Lead.org_id == org_id))
 
     if lead is None:
-        lead = Lead(**{key: value for key, value in data.items() if value is not None})
+        lead = Lead(**{key: value for key, value in data.items() if value is not None},
+                    org_id=org_id)
         db.add(lead)
     else:
         for key, value in data.items():

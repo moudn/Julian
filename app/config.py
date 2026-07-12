@@ -8,7 +8,10 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./sales_agent.db"
 
-    # Scoring
+    # Signs OAuth state tokens; set a long random value in production
+    secret_key: str = "dev-secret-change-me"
+
+    # Scoring default for new organizations
     score_threshold: int = 50
 
     # Apollo.io
@@ -20,13 +23,13 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
 
-    # Google Calendar
-    google_calendar_id: str = "primary"
-    google_access_token: str = ""
+    # Google Calendar OAuth app (create at console.cloud.google.com)
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = "http://localhost:8000/integrations/google/callback"
     google_calendar_base_url: str = "https://www.googleapis.com/calendar/v3"
-
-    # Notifications
-    sales_rep_email: str = "rep@example.com"
+    google_oauth_token_url: str = "https://oauth2.googleapis.com/token"
+    google_oauth_auth_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
 
     # SMTP — if smtp_host is empty, emails are logged instead of sent
     smtp_host: str = ""

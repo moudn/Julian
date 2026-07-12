@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.database import init_db
-from app.routers import apollo, bookings, icp, leads
+from app.routers import apollo, auth, bookings, icp, integrations, leads
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,6 +25,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(auth.router)
+app.include_router(integrations.router)
 app.include_router(leads.router)
 app.include_router(icp.router)
 app.include_router(apollo.router)

@@ -3,8 +3,8 @@ import os
 import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_sales_agent.db")
-os.environ.setdefault("SALES_REP_EMAIL", "rep@example.com")
 os.environ.setdefault("SCORE_THRESHOLD", "50")
+os.environ.setdefault("SECRET_KEY", "test-secret")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -13,6 +13,26 @@ from app.adapters.email_sender import EmailSenderAdapter  # noqa: E402
 from app.database import Base, engine  # noqa: E402
 from app.deps import get_calendar_adapter, get_email_sender  # noqa: E402
 from app.main import app  # noqa: E402
+
+
+def signup(client: TestClient, org_name="Acme Sales", email="owner@acme-sales.io",
+           rep_email="rep@example.com") -> str:
+    """Create an org + user, set the rep email, and return the API key."""
+    response = client.post("/auth/signup", json={
+        "organization_name": org_name,
+        "name": "Owner",
+        "email": email,
+        "password": "s3cretpass!",
+    })
+    assert response.status_code == 201, response.text
+    api_key = response.json()["api_key"]
+    response = client.patch(
+        "/auth/org",
+        json={"sales_rep_email": rep_email},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert response.status_code == 200, response.text
+    return api_key
 
 
 @pytest.fixture()
@@ -26,7 +46,8 @@ def email_sender():
 
 
 @pytest.fixture()
-def client(calendar, email_sender):
+def anon_client(calendar, email_sender):
+    """Client with a fresh database and no credentials attached."""
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     app.dependency_overrides[get_calendar_adapter] = lambda: calendar
@@ -34,3 +55,11 @@ def client(calendar, email_sender):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def client(anon_client):
+    """Client authenticated as the default test organization."""
+    api_key = signup(anon_client)
+    anon_client.headers.update({"Authorization": f"Bearer {api_key}"})
+    return anon_client

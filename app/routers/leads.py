@@ -3,10 +3,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.llm import LLMError, OpenRouterAdapter
-from app.config import get_settings
+from app.auth import get_current_org
 from app.database import get_db
 from app.deps import get_llm_adapter
-from app.models import Lead, LeadState
+from app.models import Lead, LeadState, Organization
 from app.schemas import CSVImportResult, LeadOut, MessageDraftOut, ScoreResult
 from app.services.leads import import_leads_csv
 from app.services.scoring import score_lead
@@ -15,51 +15,69 @@ from app.state_machine import transition
 router = APIRouter(prefix="/leads", tags=["leads"])
 
 
-def _get_lead(db: Session, lead_id: int) -> Lead:
+def _get_lead(db: Session, lead_id: int, org: Organization) -> Lead:
     lead = db.get(Lead, lead_id)
-    if lead is None:
+    if lead is None or lead.org_id != org.id:
         raise HTTPException(status_code=404, detail=f"Lead {lead_id} not found")
     return lead
 
 
 @router.post("/import", response_model=CSVImportResult)
-async def import_csv(file: UploadFile, db: Session = Depends(get_db)):
+async def import_csv(
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+):
     if file.filename and not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Expected a .csv file")
-    imported, skipped, errors = import_leads_csv(db, await file.read())
+    imported, skipped, errors = import_leads_csv(db, await file.read(), org.id)
     return CSVImportResult(imported=imported, skipped=skipped, errors=errors)
 
 
 @router.get("", response_model=list[LeadOut])
-def list_leads(state: LeadState | None = None, db: Session = Depends(get_db)):
-    query = select(Lead).order_by(Lead.id)
+def list_leads(
+    state: LeadState | None = None,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+):
+    query = select(Lead).where(Lead.org_id == org.id).order_by(Lead.id)
     if state is not None:
         query = query.where(Lead.state == state)
     return db.scalars(query).all()
 
 
 @router.get("/{lead_id}", response_model=LeadOut)
-def get_lead(lead_id: int, db: Session = Depends(get_db)):
-    return _get_lead(db, lead_id)
+def get_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+):
+    return _get_lead(db, lead_id, org)
 
 
 @router.post("/{lead_id}/score", response_model=ScoreResult)
-def score(lead_id: int, db: Session = Depends(get_db)):
-    lead = score_lead(db, _get_lead(db, lead_id))
-    return ScoreResult(
-        lead_id=lead.id, score=lead.score, threshold=get_settings().score_threshold,
-        state=lead.state,
-    )
+def score(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+):
+    lead = score_lead(db, _get_lead(db, lead_id, org), org)
+    return ScoreResult(lead_id=lead.id, score=lead.score,
+                       threshold=org.score_threshold, state=lead.state)
 
 
 @router.post("/score_all", response_model=list[ScoreResult])
-def score_all(db: Session = Depends(get_db)):
-    threshold = get_settings().score_threshold
+def score_all(
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+):
     results = []
-    for lead in db.scalars(select(Lead).where(Lead.state == LeadState.NEW)).all():
-        lead = score_lead(db, lead)
+    leads = db.scalars(select(Lead).where(
+        Lead.state == LeadState.NEW, Lead.org_id == org.id)).all()
+    for lead in leads:
+        lead = score_lead(db, lead, org)
         results.append(ScoreResult(lead_id=lead.id, score=lead.score,
-                                   threshold=threshold, state=lead.state))
+                                   threshold=org.score_threshold, state=lead.state))
     return results
 
 
@@ -67,9 +85,10 @@ def score_all(db: Session = Depends(get_db)):
 def generate_message(
     lead_id: int,
     db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
     llm: OpenRouterAdapter = Depends(get_llm_adapter),
 ):
-    lead = _get_lead(db, lead_id)
+    lead = _get_lead(db, lead_id, org)
     if lead.state != LeadState.SCORED:
         raise HTTPException(
             status_code=409,

@@ -9,7 +9,7 @@ tests when no Google credentials are configured.
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, time, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -68,18 +68,26 @@ def _business_hour_slots(
 
 
 class GoogleCalendarAdapter(CalendarAdapter):
-    def __init__(self, access_token: str | None = None, calendar_id: str | None = None,
+    """Talks to Google Calendar with a per-organization OAuth token.
+
+    `token_provider` is called before each request and must return a live
+    access token (refreshing it if needed) — see
+    app.adapters.google_oauth.get_valid_access_token.
+    """
+
+    def __init__(self, token_provider: Callable[[], str], calendar_id: str = "primary",
                  client: httpx.Client | None = None):
         settings = get_settings()
-        self.access_token = access_token if access_token is not None else settings.google_access_token
-        self.calendar_id = calendar_id or settings.google_calendar_id
+        self.token_provider = token_provider
+        self.calendar_id = calendar_id
         self.base_url = settings.google_calendar_base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=30)
 
     def _headers(self) -> dict[str, str]:
-        if not self.access_token:
-            raise CalendarError("GOOGLE_ACCESS_TOKEN is not configured")
-        return {"Authorization": f"Bearer {self.access_token}",
+        token = self.token_provider()
+        if not token:
+            raise CalendarError("No Google Calendar access token available")
+        return {"Authorization": f"Bearer {token}",
                 "Content-Type": "application/json"}
 
     def _request(self, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:

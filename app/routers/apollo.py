@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.adapters.apollo import ApolloAdapter, ApolloError
+from app.auth import get_current_org
 from app.database import get_db
 from app.deps import get_apollo_adapter
+from app.models import Organization
 from app.schemas import ApolloEnrichRequest, ApolloSearchRequest, LeadOut
 from app.services.leads import upsert_lead
 
@@ -14,11 +16,12 @@ router = APIRouter(prefix="/apollo", tags=["apollo"])
 def search_people(
     request: ApolloSearchRequest,
     db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
     apollo: ApolloAdapter = Depends(get_apollo_adapter),
 ):
     """Search Apollo.io for people matching the filters.
 
-    With save_to_db=true, matches are upserted as Leads.
+    With save_to_db=true, matches are upserted as this org's Leads.
     """
     try:
         people = apollo.search_people(
@@ -34,7 +37,7 @@ def search_people(
 
     saved_ids = []
     if request.save_to_db:
-        saved_ids = [upsert_lead(db, person).id for person in people]
+        saved_ids = [upsert_lead(db, person, org.id).id for person in people]
     return {"count": len(people), "people": people, "saved_lead_ids": saved_ids}
 
 
@@ -42,11 +45,12 @@ def search_people(
 def enrich_person(
     request: ApolloEnrichRequest,
     db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
     apollo: ApolloAdapter = Depends(get_apollo_adapter),
 ):
-    """Enrich a person by name + domain via Apollo and upsert the Lead."""
+    """Enrich a person by name + domain via Apollo and upsert this org's Lead."""
     try:
         data = apollo.enrich_person(request.name, request.domain)
     except ApolloError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return upsert_lead(db, data)
+    return upsert_lead(db, data, org.id)
