@@ -19,6 +19,7 @@ from app.routers.billing import require_active_subscription
 from app.services.leads import import_leads_csv
 from app.services.outreach import OutreachError, generate_sequence
 from app.services.scoring import score_lead
+from app.services.sending import SendingError, activate_sequence
 from app.state_machine import transition
 
 router = APIRouter(prefix="/leads", tags=["leads"],
@@ -136,6 +137,28 @@ def generate_outreach_sequence(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return SequenceOut(
+        lead_id=lead.id, state=lead.state,
+        messages=[OutreachMessageOut.model_validate(m) for m in messages],
+    )
+
+
+@router.post("/{lead_id}/activate_sequence", response_model=SequenceOut)
+def activate_outreach_sequence(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+):
+    """The customer's one approval: arm the whole sequence for autopilot.
+
+    Step 1 becomes due immediately; follow-ups are scheduled on cadence.
+    Sending stops automatically if the lead leaves SEQUENCE_ACTIVE.
+    """
+    lead = _get_lead(db, lead_id, org)
+    try:
+        messages = activate_sequence(db, lead, org)
+    except SendingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return SequenceOut(
         lead_id=lead.id, state=lead.state,
         messages=[OutreachMessageOut.model_validate(m) for m in messages],

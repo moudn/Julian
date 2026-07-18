@@ -26,9 +26,13 @@ class LeadState(str, enum.Enum):
     NEW = "NEW"
     SCORED = "SCORED"
     OUTREACH_PENDING = "OUTREACH_PENDING"
+    SEQUENCE_ACTIVE = "SEQUENCE_ACTIVE"
+    ENGAGED = "ENGAGED"
     MEETING_PROPOSED = "MEETING_PROPOSED"
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     MEETING_CONFIRMED = "MEETING_CONFIRMED"
+    NOT_INTERESTED = "NOT_INTERESTED"
+    UNSUBSCRIBED = "UNSUBSCRIBED"
 
 
 class BookingStatus(str, enum.Enum):
@@ -57,6 +61,9 @@ class Organization(Base):
     # What this tenant sells — fed to the LLM so outreach is specific,
     # e.g. "We build payroll software for restaurants that cuts admin 80%"
     product_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Appended to every outgoing sequence email. Should carry the tenant's
+    # opt-out line and postal address (CAN-SPAM/GDPR).
+    email_footer: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)
@@ -204,6 +211,10 @@ class OutreachMessage(Base):
         Enum(MessageStatus, native_enum=False, length=16), default=MessageStatus.DRAFT
     )
     spam_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Set at sequence activation: when this step becomes due to send
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

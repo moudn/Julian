@@ -10,12 +10,23 @@ between organizations.
 ## Lead lifecycle
 
 ```
-NEW -> SCORED -> OUTREACH_PENDING -> MEETING_PROPOSED -> AWAITING_APPROVAL -> MEETING_CONFIRMED
+NEW -> SCORED -> OUTREACH_PENDING -> SEQUENCE_ACTIVE -> ENGAGED
+    -> MEETING_PROPOSED -> AWAITING_APPROVAL -> MEETING_CONFIRMED
 ```
 
-Transitions are enforced by a state machine (`app/state_machine.py`); states
-cannot be skipped. `AWAITING_APPROVAL` may fall back to `MEETING_PROPOSED`
-when the sales rep rejects a booking.
+`SEQUENCE_ACTIVE` is autopilot: after one activation call the scheduler
+sends the 4-step sequence on cadence (0/3/7/12 days) from the tenant's own
+Gmail, and stops the moment the lead leaves the state (reply, unsubscribe,
+booking). `ENGAGED` means a human owns the conversation. `NOT_INTERESTED`
+and `UNSUBSCRIBED` are terminal and never receive mail. Transitions are
+enforced by a state machine (`app/state_machine.py`); states cannot be
+skipped. `AWAITING_APPROVAL` may fall back to `MEETING_PROPOSED` when the
+sales rep rejects a booking.
+
+Outreach flow: `POST /leads/{id}/generate_sequence` (research-backed 4-step
+drafts) -> review -> `POST /leads/{id}/activate_sequence` (one approval,
+then autopilot). `POST /scheduler/run` triggers a send cycle manually; a
+background loop does it automatically every `SCHEDULER_INTERVAL_SECONDS`.
 
 ### The approval guarantee
 

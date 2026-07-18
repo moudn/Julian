@@ -5,6 +5,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_sales_agent.db")
 os.environ.setdefault("SCORE_THRESHOLD", "50")
 os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
