@@ -48,6 +48,15 @@ class Organization(Base):
     sales_rep_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     score_threshold: Mapped[float] = mapped_column(Float, default=50.0)
 
+    # Stripe billing state (subscription_status mirrors Stripe's values;
+    # "none" until the org completes checkout)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    subscription_status: Mapped[str] = mapped_column(String(32), default="none")
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     users: Mapped[list["User"]] = relationship(back_populates="organization")

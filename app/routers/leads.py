@@ -8,11 +8,13 @@ from app.database import get_db
 from app.deps import get_llm_adapter
 from app.models import Lead, LeadState, Organization
 from app.schemas import CSVImportResult, LeadOut, MessageDraftOut, ScoreResult
+from app.routers.billing import require_active_subscription
 from app.services.leads import import_leads_csv
 from app.services.scoring import score_lead
 from app.state_machine import transition
 
-router = APIRouter(prefix="/leads", tags=["leads"])
+router = APIRouter(prefix="/leads", tags=["leads"],
+                   dependencies=[Depends(require_active_subscription)])
 
 
 def _get_lead(db: Session, lead_id: int, org: Organization) -> Lead:

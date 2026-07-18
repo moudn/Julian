@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     google_oauth_token_url: str = "https://oauth2.googleapis.com/token"
     google_oauth_auth_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
 
+    # Stripe billing — leave stripe_secret_key empty to disable billing
+    # entirely (all endpoints open; good for development)
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id: str = ""
+    stripe_api_base: str = "https://api.stripe.com/v1"
+    billing_success_url: str = "http://localhost:8000/billing/success"
+    billing_cancel_url: str = "http://localhost:8000/billing/cancelled"
+
     # SMTP — if smtp_host is empty, emails are logged instead of sent
     smtp_host: str = ""
     smtp_port: int = 587

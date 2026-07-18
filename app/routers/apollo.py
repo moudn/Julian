@@ -6,10 +6,12 @@ from app.auth import get_current_org
 from app.database import get_db
 from app.deps import get_apollo_adapter
 from app.models import Organization
+from app.routers.billing import require_active_subscription
 from app.schemas import ApolloEnrichRequest, ApolloSearchRequest, LeadOut
 from app.services.leads import upsert_lead
 
-router = APIRouter(prefix="/apollo", tags=["apollo"])
+router = APIRouter(prefix="/apollo", tags=["apollo"],
+                   dependencies=[Depends(require_active_subscription)])
 
 
 @router.post("/search_people")

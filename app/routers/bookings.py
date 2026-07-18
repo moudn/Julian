@@ -14,9 +14,11 @@ from app.schemas import (
     ProposeMeetingRequest,
     SelectSlotRequest,
 )
+from app.routers.billing import require_active_subscription
 from app.services.schedule_manager import ScheduleError, ScheduleManager
 
-router = APIRouter(tags=["scheduling"])
+router = APIRouter(tags=["scheduling"],
+                   dependencies=[Depends(require_active_subscription)])
 
 
 def get_schedule_manager(

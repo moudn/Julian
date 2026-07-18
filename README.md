@@ -118,6 +118,28 @@ Each customer then calls `GET /integrations/google/connect`, opens the
 returned URL, and approves — the refresh token is stored per organization
 and access tokens are refreshed automatically.
 
+## Billing (Stripe subscriptions)
+
+With `STRIPE_SECRET_KEY` unset, billing is disabled and every endpoint is
+open (development mode). To charge customers:
+
+1. In the Stripe dashboard (test mode first): create a Product with a
+   recurring Price, copy the `price_...` id.
+2. Set `STRIPE_SECRET_KEY` (sk_test_...), `STRIPE_PRICE_ID`, and
+   `STRIPE_WEBHOOK_SECRET` in `.env`. For local webhook testing install the
+   Stripe CLI and run
+   `stripe listen --forward-to localhost:8000/billing/webhook` — it prints
+   the `whsec_...` secret.
+3. Once billing is enabled, product endpoints return **402** until the org
+   subscribes:
+   - `POST /billing/checkout` → returns a Stripe Checkout URL (test card:
+     4242 4242 4242 4242, any future date / CVC)
+   - Stripe webhooks flip the org to `active` and keep the status in sync
+     (`past_due`, `canceled`, ...)
+   - `GET /billing/status` shows the current state;
+     `POST /billing/portal` returns a Customer Portal link for
+     managing/cancelling
+
 ## Project layout
 
 ```
