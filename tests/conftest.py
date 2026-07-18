@@ -49,6 +49,8 @@ def email_sender():
 @pytest.fixture()
 def anon_client(calendar, email_sender):
     """Client with a fresh database and no credentials attached."""
+    from app.deps import _dev_calendars
+    _dev_calendars.clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     app.dependency_overrides[get_calendar_adapter] = lambda: calendar

@@ -33,6 +33,7 @@ class ReplyIngestOut(BaseModel):
     auto_replied: bool = False
     escalated: bool = False
     suggested_reply: str | None = None
+    booking_id: int | None = None
 
 
 class PollOut(BaseModel):

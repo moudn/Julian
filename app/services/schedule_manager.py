@@ -36,10 +36,12 @@ class ScheduleManager:
     def propose_meeting(self, db: Session, lead: Lead,
                         duration_minutes: int = 30, slot_count: int = 3) -> list[datetime]:
         """Find free slots on the rep's calendar and offer them to the lead."""
-        if lead.state != LeadState.OUTREACH_PENDING:
+        allowed = (LeadState.OUTREACH_PENDING, LeadState.SEQUENCE_ACTIVE,
+                   LeadState.ENGAGED)
+        if lead.state not in allowed:
             raise ScheduleError(
-                f"Lead must be in OUTREACH_PENDING to propose a meeting "
-                f"(currently {lead.state.value})"
+                f"Lead must be in OUTREACH_PENDING, SEQUENCE_ACTIVE, or "
+                f"ENGAGED to propose a meeting (currently {lead.state.value})"
             )
 
         slots = self.calendar.find_available_slots(duration_minutes, slot_count)

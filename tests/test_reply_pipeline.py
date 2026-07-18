@@ -91,26 +91,50 @@ def test_out_of_office_postpones_without_state_change(client):
         db.close()
 
 
-def test_interested_reply_engages_and_notifies_rep(client, email_sender):
+def test_interested_reply_triggers_auto_slot_proposal(client, email_sender):
     lead_id = _active_lead(client)
     result = client.post("/replies/ingest", json={
         "lead_id": lead_id,
         "body": "This sounds good, tell me more — happy to chat next week.",
     }).json()
     assert result["category"] == "INTERESTED"
+    assert result["lead_state"] == "MEETING_PROPOSED"  # structured path
+    assert not result["escalated"]
+
+    lead = client.get(f"/leads/{lead_id}").json()
+    assert 2 <= len(lead["proposed_slots"]) <= 3
+
+    # rep got an FYI, not a to-do
+    fyi = [m for m in email_sender.sent if "times proposed" in m["subject"]]
+    assert len(fyi) == 1
+    assert "No action needed" in fyi[0]["body"]
+
+    # thread records the proposal; autopilot is off for this lead
+    conversation = client.get(f"/leads/{lead_id}/conversation").json()
+    assert any(m["direction"] == "OUTBOUND"
+               and "proposed meeting times" in m["body"] for m in conversation)
+    assert client.post("/scheduler/run").json()["sent"] == 0
+
+
+def test_interested_falls_back_to_human_when_calendar_fails(client, email_sender,
+                                                            monkeypatch):
+    from app.adapters.calendar import CalendarError
+    from app.services import replies as replies_service
+
+    class BrokenCalendar:
+        def find_available_slots(self, *a, **k):
+            raise CalendarError("google is down")
+
+    monkeypatch.setattr(replies_service, "get_org_calendar",
+                        lambda db, org: BrokenCalendar())
+    lead_id = _active_lead(client)
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "sounds good, tell me more",
+    }).json()
+    assert result["category"] == "INTERESTED"
     assert result["lead_state"] == "ENGAGED"
     assert result["escalated"]
-    assert result["suggested_reply"]
-
-    # rep got the handoff email with the suggested reply and stop notice
-    handoff = [m for m in email_sender.sent if "your turn" in m["subject"]]
-    assert len(handoff) == 1
-    assert "sounds good" in handoff[0]["body"].lower()
-    assert "Suggested reply" in handoff[0]["body"]
-    assert "sequence for this lead has been stopped" in handoff[0]["body"]
-
-    # autopilot is off for this lead
-    assert client.post("/scheduler/run").json()["sent"] == 0
+    assert any("your turn" in m["subject"] for m in email_sender.sent)
 
 
 def test_complex_reply_escalates_with_thread_recorded(client, email_sender):
@@ -234,6 +258,68 @@ def test_gmail_reader_parses_multipart_message():
     message = reader.get_message("m1")
     assert message["subject"] == "Re: quick question"
     assert message["body"] == "Sounds good, send times!"
+
+
+def test_full_reply_to_booking_loop(client, email_sender, calendar):
+    """Interest -> auto-proposed slots -> 'option 2' reply -> PendingBooking
+    -> human approval -> calendar event. The complete agreed design."""
+    lead_id = _active_lead(client)
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "sounds good, send times",
+    })
+    assert calendar.events == []  # proposing touches nothing
+
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "Option 2 works great for me!",
+    }).json()
+    assert result["category"] == "SLOT_SELECTED"
+    assert result["lead_state"] == "AWAITING_APPROVAL"
+    assert result["booking_id"] is not None
+    assert calendar.events == []  # still nothing booked without approval
+
+    # rep received the approval request
+    assert any("Approval needed" in m["subject"] for m in email_sender.sent)
+
+    # human approves -> the event exists
+    approve = client.post(f"/approve_booking/{result['booking_id']}")
+    assert approve.status_code == 200
+    assert len(calendar.events) == 1
+    assert client.get(f"/leads/{lead_id}").json()["state"] == "MEETING_CONFIRMED"
+
+
+def test_ambiguous_slot_reply_escalates_to_human(client, email_sender):
+    lead_id = _active_lead(client)
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "sounds good, send times",
+    })
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id,
+        "body": "Hmm, could we do something in the afternoon instead?",
+    }).json()
+    assert result["category"] != "SLOT_SELECTED"
+    assert result["lead_state"] == "ENGAGED"  # human takes over
+    assert result["escalated"]
+
+
+def test_extract_slot_choice_heuristics():
+    from app.services.replies import extract_slot_choice
+    slots = ["2026-07-20T09:00:00+00:00",   # Monday
+             "2026-07-20T10:00:00+00:00",   # Monday
+             "2026-07-22T14:00:00+00:00"]   # Wednesday
+
+    def chosen(body):
+        result = extract_slot_choice(body, slots)
+        return result.isoformat() if result else None
+
+    assert chosen("option 2 please") == "2026-07-20T10:00:00+00:00"
+    assert chosen("The first one works") == "2026-07-20T09:00:00+00:00"
+    assert chosen("Wednesday suits me") == "2026-07-22T14:00:00+00:00"
+    assert chosen("Monday at 10:00 works") == "2026-07-20T10:00:00+00:00"
+    assert chosen("let's do 2pm") == "2026-07-22T14:00:00+00:00"
+    assert chosen("Monday works") is None            # two Monday slots: ambiguous
+    assert chosen("any of those work") is None       # no signal
+    assert chosen("how about Friday?") is None       # not a proposed slot
+    assert extract_slot_choice("option 1", None) is None
 
 
 def test_duplicate_gmail_message_ignored(client):

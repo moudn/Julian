@@ -28,6 +28,17 @@ drafts) -> review -> `POST /leads/{id}/activate_sequence` (one approval,
 then autopilot). `POST /scheduler/run` triggers a send cycle manually; a
 background loop does it automatically every `SCHEDULER_INTERVAL_SECONDS`.
 
+Replies are polled from the connected Gmail (or fed via
+`POST /replies/ingest`) and triaged: opt-outs and "not interested" end the
+sequence with no human involvement (keyword-detected, never
+LLM-dependent); out-of-office postpones it; an interested reply makes
+Julian propose 2-3 real calendar slots immediately; questions are answered
+by Julian only from the org's pre-approved `knowledge_base`; everything
+else hands off to the rep with a suggested reply ready to send. A reply
+picking a slot ("option 2", "Wednesday works") creates the PendingBooking
+— the calendar event still only exists after `POST /approve_booking/{id}`.
+`GET /leads/{id}/conversation` shows the full thread.
+
 ### The approval guarantee
 
 **No calendar event is ever created without an explicit approval call.**

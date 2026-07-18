@@ -13,14 +13,17 @@ Triage behaviors (agreed product design):
 """
 
 import logging
-from datetime import timedelta
+import re
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.adapters.calendar import CalendarError
 from app.adapters.email_sender import EmailSenderAdapter
 from app.adapters.gmail import GmailError, GmailReaderAdapter
 from app.adapters.llm import OpenRouterAdapter
+from app.deps import get_org_calendar
 from app.models import (
     ConversationMessage,
     GoogleCredential,
@@ -33,6 +36,7 @@ from app.models import (
     ReplyCategory,
     utcnow,
 )
+from app.services.schedule_manager import ScheduleError, ScheduleManager
 from app.services.sending import get_outbound_sender
 from app.state_machine import transition
 
@@ -72,6 +76,54 @@ def _postpone_pending_steps(db: Session, lead: Lead, days: int) -> None:
             step.scheduled_at = step.scheduled_at + timedelta(days=days)
 
 
+_ORDINALS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3}
+
+
+def extract_slot_choice(body: str, proposed_slots: list[str] | None) -> datetime | None:
+    """Deterministically match a reply against the proposed slots.
+
+    Understands "option 2", "the first one", weekday names, and times like
+    "9am" / "09:00". Returns the chosen slot only when the match is
+    unambiguous — anything uncertain returns None and goes to a human.
+    """
+    if not proposed_slots:
+        return None
+    slots = []
+    for raw in proposed_slots:
+        slot = datetime.fromisoformat(raw)
+        if slot.tzinfo is None:
+            slot = slot.replace(tzinfo=timezone.utc)
+        slots.append(slot)
+    lowered = body.lower()
+
+    match = re.search(r"\b(?:option|slot|number)\s*#?\s*([1-9])\b", lowered)
+    if match:
+        index = int(match.group(1)) - 1
+        return slots[index] if 0 <= index < len(slots) else None
+
+    ordinal_hits = {n for word, n in _ORDINALS.items()
+                    if re.search(rf"\b{word}\b", lowered)}
+    if len(ordinal_hits) == 1:
+        index = ordinal_hits.pop() - 1
+        return slots[index] if 0 <= index < len(slots) else None
+
+    weekday_hits = [s for s in slots if s.strftime("%A").lower() in lowered]
+    if len({s.date() for s in weekday_hits}) == 1 and weekday_hits:
+        if len(weekday_hits) == 1:
+            return weekday_hits[0]
+        # same day, several times — try to disambiguate by time below
+        slots = weekday_hits
+
+    compact = lowered.replace(" ", "").replace(".", "")
+    time_hits = [s for s in slots
+                 if s.strftime("%H:%M") in lowered
+                 or s.strftime("%I%p").lstrip("0").lower() in compact
+                 or s.strftime("%I:%M%p").lstrip("0").lower() in compact]
+    if len(time_hits) == 1:
+        return time_hits[0]
+    return None
+
+
 def _thread_bodies(db: Session, lead: Lead, limit: int = 6) -> list[str]:
     messages = db.scalars(
         select(ConversationMessage)
@@ -101,6 +153,15 @@ def ingest_reply(
 
     llm = llm or OpenRouterAdapter()
     notifier = notifier or EmailSenderAdapter()
+
+    # A lead choosing one of the proposed slots is the structured path to a
+    # booking — checked deterministically before any classification.
+    if lead.state == LeadState.MEETING_PROPOSED:
+        chosen = extract_slot_choice(body, lead.proposed_slots)
+        if chosen is not None:
+            return _handle_slot_selection(
+                db, lead, org, body, subject, gmail_message_id, chosen,
+                notifier, outbound_sender)
 
     thread = _thread_bodies(db, lead)
     result = llm.classify_reply(lead, org, body, thread)
@@ -165,9 +226,46 @@ def ingest_reply(
             _notify_rep(notifier, org, lead, body, result.get("suggested_reply")
                         or result.get("answer") or "")
 
-    else:  # INTERESTED, COMPLEX, or QUESTION without a safe answer
+    elif category == ReplyCategory.INTERESTED and lead.state in (
+            LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING, LeadState.ENGAGED):
+        # Structured path: strike while the iron is hot — propose concrete
+        # slots immediately. Falls back to human handoff if the calendar
+        # can't produce slots.
         _retire_pending_steps(db, lead)
-        if lead.state in (LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING):
+        try:
+            sender = outbound_sender or get_outbound_sender(db, org)
+            manager = ScheduleManager(
+                calendar=get_org_calendar(db, org), email_sender=sender, org=org)
+            slots = manager.propose_meeting(db, lead)
+            db.add(ConversationMessage(
+                org_id=org.id, lead_id=lead.id,
+                direction=MessageDirection.OUTBOUND,
+                subject="Re: " + (subject or "our call"),
+                body="[Julian proposed meeting times] "
+                     + ", ".join(s.strftime("%A %B %d %H:%M UTC") for s in slots),
+            ))
+            if org.sales_rep_email:
+                notifier.send(
+                    to=org.sales_rep_email,
+                    subject=f"Julian: {lead.name} is interested — times proposed",
+                    body=(f"{lead.name} replied:\n\n{body}\n\n----\n"
+                          f"Julian offered them "
+                          f"{len(slots)} times from the calendar. When they pick "
+                          f"one you'll get an approval request. No action needed "
+                          f"right now."),
+                )
+        except (ScheduleError, CalendarError, GmailError, OSError) as exc:
+            logger.warning("auto-propose failed for lead %s: %s", lead.id, exc)
+            if lead.state != LeadState.MEETING_PROPOSED:
+                _to_engaged(lead)
+            escalated = True
+            _notify_rep(notifier, org, lead, body,
+                        result.get("suggested_reply") or "")
+
+    else:  # COMPLEX, QUESTION without a safe answer, or INTERESTED mid-proposal
+        _retire_pending_steps(db, lead)
+        if lead.state in (LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING,
+                          LeadState.MEETING_PROPOSED):
             _to_engaged(lead)
         escalated = True
         _notify_rep(notifier, org, lead, body, result.get("suggested_reply") or "")
@@ -180,7 +278,59 @@ def ingest_reply(
         "auto_replied": auto_replied,
         "escalated": escalated,
         "suggested_reply": result.get("suggested_reply") or None,
+        "booking_id": None,
     }
+
+
+def _handle_slot_selection(db: Session, lead: Lead, org: Organization, body: str,
+                           subject: str | None, gmail_message_id: str | None,
+                           chosen: datetime, notifier: EmailSenderAdapter,
+                           outbound_sender) -> dict:
+    """The lead picked a proposed slot: create the PendingBooking.
+
+    ScheduleManager.select_slot records the booking and asks the rep for
+    approval — the calendar is still untouched until POST /approve_booking.
+    """
+    db.add(ConversationMessage(
+        org_id=org.id, lead_id=lead.id,
+        direction=MessageDirection.INBOUND,
+        subject=subject, body=body,
+        gmail_message_id=gmail_message_id,
+        category="SLOT_SELECTED",
+    ))
+    manager = ScheduleManager(
+        calendar=get_org_calendar(db, org), email_sender=notifier, org=org)
+    try:
+        booking = manager.select_slot(db, lead, chosen)
+    except ScheduleError as exc:
+        logger.warning("slot selection failed for lead %s: %s", lead.id, exc)
+        db.commit()
+        return {"status": "processed", "category": "SLOT_SELECTED",
+                "lead_state": lead.state.value, "auto_replied": False,
+                "escalated": False, "suggested_reply": None, "booking_id": None}
+
+    acknowledged = False
+    try:
+        sender = outbound_sender or get_outbound_sender(db, org)
+        ack = (f"Hi {lead.name.split()[0]},\n\n"
+               f"Perfect — I've pencilled in "
+               f"{chosen.strftime('%A %B %d, %H:%M')} UTC. You'll receive a "
+               f"calendar invitation shortly.\n\nSpeak soon")
+        sender.send(to=lead.email, subject="Re: " + (subject or "our call"), body=ack)
+        db.add(ConversationMessage(
+            org_id=org.id, lead_id=lead.id,
+            direction=MessageDirection.OUTBOUND,
+            subject="Re: " + (subject or "our call"), body=ack,
+        ))
+        acknowledged = True
+    except (GmailError, OSError) as exc:
+        logger.warning("slot ack failed for lead %s: %s", lead.id, exc)
+
+    db.commit()
+    return {"status": "processed", "category": "SLOT_SELECTED",
+            "lead_state": lead.state.value, "auto_replied": acknowledged,
+            "escalated": False, "suggested_reply": None,
+            "booking_id": booking.id}
 
 
 def _to_engaged(lead: Lead) -> None:
