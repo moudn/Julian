@@ -6,10 +6,18 @@ from app.adapters.llm import LLMError, OpenRouterAdapter
 from app.auth import get_current_org
 from app.database import get_db
 from app.deps import get_llm_adapter
-from app.models import Lead, LeadState, Organization
-from app.schemas import CSVImportResult, LeadOut, MessageDraftOut, ScoreResult
+from app.models import Lead, LeadState, Organization, OutreachMessage
+from app.schemas import (
+    CSVImportResult,
+    LeadOut,
+    MessageDraftOut,
+    OutreachMessageOut,
+    ScoreResult,
+    SequenceOut,
+)
 from app.routers.billing import require_active_subscription
 from app.services.leads import import_leads_csv
+from app.services.outreach import OutreachError, generate_sequence
 from app.services.scoring import score_lead
 from app.state_machine import transition
 
@@ -98,7 +106,7 @@ def generate_message(
                    f"(currently {lead.state.value})",
         )
     try:
-        draft = llm.generate_first_touch_email(lead)
+        draft = llm.generate_first_touch_email(lead, org)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -106,3 +114,47 @@ def generate_message(
     transition(lead, LeadState.OUTREACH_PENDING)
     db.commit()
     return MessageDraftOut(lead_id=lead.id, draft=draft, state=lead.state)
+
+
+@router.post("/{lead_id}/generate_sequence", response_model=SequenceOut)
+def generate_outreach_sequence(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+    llm: OpenRouterAdapter = Depends(get_llm_adapter),
+):
+    """Generate the full research-backed 4-step sequence as drafts.
+
+    Step 1 first touch (PAS), step 2 bump with proof (day 3), step 3
+    value-add (day 7), step 4 breakup (day 12). Regenerating replaces unsent
+    drafts only.
+    """
+    lead = _get_lead(db, lead_id, org)
+    try:
+        messages = generate_sequence(db, lead, org, llm)
+    except OutreachError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return SequenceOut(
+        lead_id=lead.id, state=lead.state,
+        messages=[OutreachMessageOut.model_validate(m) for m in messages],
+    )
+
+
+@router.get("/{lead_id}/sequence", response_model=SequenceOut)
+def get_outreach_sequence(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+):
+    lead = _get_lead(db, lead_id, org)
+    messages = db.scalars(
+        select(OutreachMessage)
+        .where(OutreachMessage.lead_id == lead.id)
+        .order_by(OutreachMessage.step)
+    ).all()
+    return SequenceOut(
+        lead_id=lead.id, state=lead.state,
+        messages=[OutreachMessageOut.model_validate(m) for m in messages],
+    )

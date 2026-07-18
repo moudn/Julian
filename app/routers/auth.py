@@ -33,6 +33,7 @@ class AuthResponse(BaseModel):
 class OrgSettingsIn(BaseModel):
     sales_rep_email: EmailStr | None = None
     score_threshold: float | None = None
+    product_description: str | None = Field(default=None, max_length=2000)
 
 
 class OrgOut(BaseModel):
@@ -40,6 +41,7 @@ class OrgOut(BaseModel):
     name: str
     sales_rep_email: str | None
     score_threshold: float
+    product_description: str | None
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=201)
@@ -86,6 +88,7 @@ def me(org: Organization = Depends(get_current_org)):
     return OrgOut(
         id=org.id, name=org.name, sales_rep_email=org.sales_rep_email,
         score_threshold=org.score_threshold,
+        product_description=org.product_description,
     )
 
 
@@ -100,9 +103,12 @@ def update_org_settings(
         org.sales_rep_email = request.sales_rep_email
     if request.score_threshold is not None:
         org.score_threshold = request.score_threshold
+    if request.product_description is not None:
+        org.product_description = request.product_description
     db.commit()
     db.refresh(org)
     return OrgOut(
         id=org.id, name=org.name, sales_rep_email=org.sales_rep_email,
         score_threshold=org.score_threshold,
+        product_description=org.product_description,
     )

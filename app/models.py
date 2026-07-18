@@ -37,6 +37,13 @@ class BookingStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
+class MessageStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    APPROVED = "APPROVED"
+    SENT = "SENT"
+    SKIPPED = "SKIPPED"
+
+
 class Organization(Base):
     """A tenant. Every lead, rule, booking, user, and credential belongs to one."""
 
@@ -47,6 +54,9 @@ class Organization(Base):
     # Where booking-approval notifications go for this tenant
     sales_rep_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     score_threshold: Mapped[float] = mapped_column(Float, default=50.0)
+    # What this tenant sells — fed to the LLM so outreach is specific,
+    # e.g. "We build payroll software for restaurants that cuts admin 80%"
+    product_description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)
@@ -172,6 +182,33 @@ class ICPRule(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OutreachMessage(Base):
+    """One step of a lead's outreach sequence, stored as an approvable draft.
+
+    Steps follow research-backed cadence: 1 = first touch (PAS), 2 = bump
+    with proof (day 3), 3 = value-add (day 7), 4 = breakup (day 12).
+    """
+
+    __tablename__ = "outreach_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    step: Mapped[int] = mapped_column(Integer)
+    send_after_days: Mapped[int] = mapped_column(Integer, default=0)
+    subject: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[MessageStatus] = mapped_column(
+        Enum(MessageStatus, native_enum=False, length=16), default=MessageStatus.DRAFT
+    )
+    spam_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    lead: Mapped["Lead"] = relationship()
 
 
 class PendingBooking(Base):
