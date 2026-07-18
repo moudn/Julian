@@ -1,8 +1,11 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import SessionLocal, init_db
@@ -84,3 +87,13 @@ app.include_router(scheduler.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Dashboard SPA (no build step; talks to the JSON API above)
+app.mount("/app", StaticFiles(directory=Path(__file__).parent / "static", html=True),
+          name="dashboard")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/app/")
