@@ -84,6 +84,26 @@ class MessageDraftOut(BaseModel):
     state: LeadState
 
 
+class OutreachMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    lead_id: int
+    step: int
+    send_after_days: int
+    subject: str
+    body: str
+    status: str
+    spam_flags: list[str] | None
+    created_at: datetime
+
+
+class SequenceOut(BaseModel):
+    lead_id: int
+    state: LeadState
+    messages: list[OutreachMessageOut]
+
+
 # ---------- Scheduling ----------
 
 class ProposeMeetingRequest(BaseModel):

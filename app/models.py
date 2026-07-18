@@ -26,15 +26,40 @@ class LeadState(str, enum.Enum):
     NEW = "NEW"
     SCORED = "SCORED"
     OUTREACH_PENDING = "OUTREACH_PENDING"
+    SEQUENCE_ACTIVE = "SEQUENCE_ACTIVE"
+    ENGAGED = "ENGAGED"
     MEETING_PROPOSED = "MEETING_PROPOSED"
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     MEETING_CONFIRMED = "MEETING_CONFIRMED"
+    NOT_INTERESTED = "NOT_INTERESTED"
+    UNSUBSCRIBED = "UNSUBSCRIBED"
 
 
 class BookingStatus(str, enum.Enum):
     AWAITING_APPROVAL = "AWAITING_APPROVAL"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class MessageStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    APPROVED = "APPROVED"
+    SENT = "SENT"
+    SKIPPED = "SKIPPED"
+
+
+class MessageDirection(str, enum.Enum):
+    INBOUND = "INBOUND"
+    OUTBOUND = "OUTBOUND"
+
+
+class ReplyCategory(str, enum.Enum):
+    INTERESTED = "INTERESTED"
+    QUESTION = "QUESTION"
+    COMPLEX = "COMPLEX"
+    NOT_INTERESTED = "NOT_INTERESTED"
+    UNSUBSCRIBE = "UNSUBSCRIBE"
+    OUT_OF_OFFICE = "OUT_OF_OFFICE"
 
 
 class Organization(Base):
@@ -47,6 +72,24 @@ class Organization(Base):
     # Where booking-approval notifications go for this tenant
     sales_rep_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     score_threshold: Mapped[float] = mapped_column(Float, default=50.0)
+    # What this tenant sells — fed to the LLM so outreach is specific,
+    # e.g. "We build payroll software for restaurants that cuts admin 80%"
+    product_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Appended to every outgoing sequence email. Should carry the tenant's
+    # opt-out line and postal address (CAN-SPAM/GDPR).
+    email_footer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Pre-approved answers Julian may draw on when replying to basic
+    # questions. Questions not answerable from this text escalate to a human.
+    knowledge_base: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Stripe billing state (subscription_status mirrors Stripe's values;
+    # "none" until the org completes checkout)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    subscription_status: Mapped[str] = mapped_column(String(32), default="none")
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -163,6 +206,63 @@ class ICPRule(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OutreachMessage(Base):
+    """One step of a lead's outreach sequence, stored as an approvable draft.
+
+    Steps follow research-backed cadence: 1 = first touch (PAS), 2 = bump
+    with proof (day 3), 3 = value-add (day 7), 4 = breakup (day 12).
+    """
+
+    __tablename__ = "outreach_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    step: Mapped[int] = mapped_column(Integer)
+    send_after_days: Mapped[int] = mapped_column(Integer, default=0)
+    subject: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[MessageStatus] = mapped_column(
+        Enum(MessageStatus, native_enum=False, length=16), default=MessageStatus.DRAFT
+    )
+    spam_flags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Set at sequence activation: when this step becomes due to send
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    lead: Mapped["Lead"] = relationship()
+
+
+class ConversationMessage(Base):
+    """One email in a lead's conversation thread (inbound or outbound)."""
+
+    __tablename__ = "conversation_messages"
+    __table_args__ = (
+        UniqueConstraint("org_id", "gmail_message_id", name="uq_conv_gmail"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    direction: Mapped[MessageDirection] = mapped_column(
+        Enum(MessageDirection, native_enum=False, length=16)
+    )
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    body: Mapped[str] = mapped_column(Text)
+    gmail_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # For inbound messages: how Julian triaged it, and what he suggested
+    category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    suggested_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    lead: Mapped["Lead"] = relationship()
 
 
 class PendingBooking(Base):

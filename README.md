@@ -10,12 +10,34 @@ between organizations.
 ## Lead lifecycle
 
 ```
-NEW -> SCORED -> OUTREACH_PENDING -> MEETING_PROPOSED -> AWAITING_APPROVAL -> MEETING_CONFIRMED
+NEW -> SCORED -> OUTREACH_PENDING -> SEQUENCE_ACTIVE -> ENGAGED
+    -> MEETING_PROPOSED -> AWAITING_APPROVAL -> MEETING_CONFIRMED
 ```
 
-Transitions are enforced by a state machine (`app/state_machine.py`); states
-cannot be skipped. `AWAITING_APPROVAL` may fall back to `MEETING_PROPOSED`
-when the sales rep rejects a booking.
+`SEQUENCE_ACTIVE` is autopilot: after one activation call the scheduler
+sends the 4-step sequence on cadence (0/3/7/12 days) from the tenant's own
+Gmail, and stops the moment the lead leaves the state (reply, unsubscribe,
+booking). `ENGAGED` means a human owns the conversation. `NOT_INTERESTED`
+and `UNSUBSCRIBED` are terminal and never receive mail. Transitions are
+enforced by a state machine (`app/state_machine.py`); states cannot be
+skipped. `AWAITING_APPROVAL` may fall back to `MEETING_PROPOSED` when the
+sales rep rejects a booking.
+
+Outreach flow: `POST /leads/{id}/generate_sequence` (research-backed 4-step
+drafts) -> review -> `POST /leads/{id}/activate_sequence` (one approval,
+then autopilot). `POST /scheduler/run` triggers a send cycle manually; a
+background loop does it automatically every `SCHEDULER_INTERVAL_SECONDS`.
+
+Replies are polled from the connected Gmail (or fed via
+`POST /replies/ingest`) and triaged: opt-outs and "not interested" end the
+sequence with no human involvement (keyword-detected, never
+LLM-dependent); out-of-office postpones it; an interested reply makes
+Julian propose 2-3 real calendar slots immediately; questions are answered
+by Julian only from the org's pre-approved `knowledge_base`; everything
+else hands off to the rep with a suggested reply ready to send. A reply
+picking a slot ("option 2", "Wednesday works") creates the PendingBooking
+— the calendar event still only exists after `POST /approve_booking/{id}`.
+`GET /leads/{id}/conversation` shows the full thread.
 
 ### The approval guarantee
 
@@ -117,6 +139,28 @@ One-time setup for you as the operator, free of charge:
 Each customer then calls `GET /integrations/google/connect`, opens the
 returned URL, and approves — the refresh token is stored per organization
 and access tokens are refreshed automatically.
+
+## Billing (Stripe subscriptions)
+
+With `STRIPE_SECRET_KEY` unset, billing is disabled and every endpoint is
+open (development mode). To charge customers:
+
+1. In the Stripe dashboard (test mode first): create a Product with a
+   recurring Price, copy the `price_...` id.
+2. Set `STRIPE_SECRET_KEY` (sk_test_...), `STRIPE_PRICE_ID`, and
+   `STRIPE_WEBHOOK_SECRET` in `.env`. For local webhook testing install the
+   Stripe CLI and run
+   `stripe listen --forward-to localhost:8000/billing/webhook` — it prints
+   the `whsec_...` secret.
+3. Once billing is enabled, product endpoints return **402** until the org
+   subscribes:
+   - `POST /billing/checkout` → returns a Stripe Checkout URL (test card:
+     4242 4242 4242 4242, any future date / CVC)
+   - Stripe webhooks flip the org to `active` and keep the status in sync
+     (`past_due`, `canceled`, ...)
+   - `GET /billing/status` shows the current state;
+     `POST /billing/portal` returns a Customer Portal link for
+     managing/cancelling
 
 ## Project layout
 

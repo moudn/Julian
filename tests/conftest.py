@@ -5,6 +5,7 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_sales_agent.db")
 os.environ.setdefault("SCORE_THRESHOLD", "50")
 os.environ.setdefault("SECRET_KEY", "test-secret")
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -48,6 +49,8 @@ def email_sender():
 @pytest.fixture()
 def anon_client(calendar, email_sender):
     """Client with a fresh database and no credentials attached."""
+    from app.deps import _dev_calendars
+    _dev_calendars.clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     app.dependency_overrides[get_calendar_adapter] = lambda: calendar

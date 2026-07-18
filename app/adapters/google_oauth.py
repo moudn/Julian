@@ -18,7 +18,12 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import GoogleCredential
 
-SCOPES = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy"
+SCOPES = (
+    "https://www.googleapis.com/auth/calendar.events "
+    "https://www.googleapis.com/auth/calendar.freebusy "
+    "https://www.googleapis.com/auth/gmail.send "
+    "https://www.googleapis.com/auth/gmail.readonly"
+)
 
 
 class GoogleOAuthError(Exception):

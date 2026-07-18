@@ -33,10 +33,8 @@ def get_apollo_adapter() -> ApolloAdapter:
     return ApolloAdapter()
 
 
-def get_calendar_adapter(
-    org: Organization = Depends(get_current_org),
-    db: Session = Depends(get_db),
-) -> CalendarAdapter:
+def get_org_calendar(db: Session, org: Organization) -> CalendarAdapter:
+    """Plain-function form usable from services (not just request handlers)."""
     credential = db.scalar(
         select(GoogleCredential).where(GoogleCredential.org_id == org.id)
     )
@@ -46,6 +44,13 @@ def get_calendar_adapter(
             calendar_id=credential.calendar_id,
         )
     return _dev_calendars.setdefault(org.id, InMemoryCalendarAdapter())
+
+
+def get_calendar_adapter(
+    org: Organization = Depends(get_current_org),
+    db: Session = Depends(get_db),
+) -> CalendarAdapter:
+    return get_org_calendar(db, org)
 
 
 @lru_cache

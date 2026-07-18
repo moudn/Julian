@@ -5,9 +5,11 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_org
 from app.database import get_db
 from app.models import ICPRule, Organization
+from app.routers.billing import require_active_subscription
 from app.schemas import ICPRuleIn, ICPRuleOut
 
-router = APIRouter(prefix="/icp/rules", tags=["icp"])
+router = APIRouter(prefix="/icp/rules", tags=["icp"],
+                   dependencies=[Depends(require_active_subscription)])
 
 
 def _get_rule(db: Session, rule_id: int, org: Organization) -> ICPRule:

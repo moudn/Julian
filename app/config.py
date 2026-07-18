@@ -30,6 +30,21 @@ class Settings(BaseSettings):
     google_calendar_base_url: str = "https://www.googleapis.com/calendar/v3"
     google_oauth_token_url: str = "https://oauth2.googleapis.com/token"
     google_oauth_auth_url: str = "https://accounts.google.com/o/oauth2/v2/auth"
+    gmail_api_base: str = "https://gmail.googleapis.com/gmail/v1"
+
+    # Sequence send scheduler (background loop). Interval in seconds;
+    # scheduler_enabled=false relies on POST /scheduler/run (cron) instead.
+    scheduler_enabled: bool = True
+    scheduler_interval_seconds: int = 60
+
+    # Stripe billing — leave stripe_secret_key empty to disable billing
+    # entirely (all endpoints open; good for development)
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_id: str = ""
+    stripe_api_base: str = "https://api.stripe.com/v1"
+    billing_success_url: str = "http://localhost:8000/billing/success"
+    billing_cancel_url: str = "http://localhost:8000/billing/cancelled"
 
     # SMTP — if smtp_host is empty, emails are logged instead of sent
     smtp_host: str = ""
