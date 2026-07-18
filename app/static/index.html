@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Julian — AI Sales Agent</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤝</text></svg>">
+</head>
+<body>
+
+<!-- ============ AUTH ============ -->
+<div id="auth-view" class="auth-wrap hidden">
+  <div class="auth-card">
+    <div class="brand-lg">Julian</div>
+    <p class="muted">Your AI sales agent. Outreach on autopilot,<br>humans on the moments that matter.</p>
+
+    <div class="tabs">
+      <button id="tab-login" class="tab active" onclick="ui.authTab('login')">Sign in</button>
+      <button id="tab-signup" class="tab" onclick="ui.authTab('signup')">Create account</button>
+    </div>
+
+    <form id="login-form" onsubmit="return ui.login(event)">
+      <label>Email<input type="email" name="email" required></label>
+      <label>Password<input type="password" name="password" required></label>
+      <button class="btn primary full" type="submit">Sign in</button>
+    </form>
+
+    <form id="signup-form" class="hidden" onsubmit="return ui.signup(event)">
+      <label>Company name<input type="text" name="organization_name" required></label>
+      <label>Your name<input type="text" name="name" required></label>
+      <label>Email<input type="email" name="email" required></label>
+      <label>Password<input type="password" name="password" minlength="8" required></label>
+      <button class="btn primary full" type="submit">Create account</button>
+    </form>
+    <p id="auth-error" class="error hidden"></p>
+  </div>
+</div>
+
+<!-- ============ APP SHELL ============ -->
+<div id="app-view" class="shell hidden">
+  <aside class="sidebar">
+    <div class="brand">Julian</div>
+    <nav>
+      <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+      <a href="#/leads" data-nav="leads">Leads</a>
+      <a href="#/approvals" data-nav="approvals">Approvals <span id="approvals-badge" class="pill hidden"></span></a>
+      <a href="#/settings" data-nav="settings">Settings</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="org-name" class="muted small"></div>
+      <button class="btn ghost small" onclick="ui.logout()">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="billing-banner" class="banner hidden">
+      No active subscription — Julian is paused.
+      <button class="btn small" onclick="ui.checkout()">Subscribe</button>
+    </div>
+    <div id="page"></div>
+  </main>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
