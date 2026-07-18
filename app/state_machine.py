@@ -35,7 +35,12 @@ ALLOWED_TRANSITIONS: dict[LeadState, set[LeadState]] = {
         LeadState.NOT_INTERESTED,
         LeadState.UNSUBSCRIBED,
     },
-    LeadState.MEETING_PROPOSED: {LeadState.AWAITING_APPROVAL},
+    LeadState.MEETING_PROPOSED: {
+        LeadState.AWAITING_APPROVAL,
+        LeadState.ENGAGED,
+        LeadState.NOT_INTERESTED,
+        LeadState.UNSUBSCRIBED,
+    },
     LeadState.AWAITING_APPROVAL: {LeadState.MEETING_CONFIRMED, LeadState.MEETING_PROPOSED},
     LeadState.MEETING_CONFIRMED: set(),
     LeadState.NOT_INTERESTED: set(),

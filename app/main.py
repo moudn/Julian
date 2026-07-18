@@ -6,27 +6,46 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.database import SessionLocal, init_db
-from app.routers import apollo, auth, billing, bookings, icp, integrations, leads, scheduler
+from app.routers import (
+    apollo,
+    auth,
+    billing,
+    bookings,
+    icp,
+    integrations,
+    leads,
+    replies,
+    scheduler,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def _send_loop(interval_seconds: int):
+def _run_agent_cycle() -> dict:
+    """One full autopilot pass: triage new replies first, then send due steps."""
+    from app.services.replies import run_reply_cycle_all_orgs
     from app.services.sending import run_send_cycle_all_orgs
 
+    db = SessionLocal()
+    try:
+        replies_result = run_reply_cycle_all_orgs(db)
+        send_result = run_send_cycle_all_orgs(db)
+    finally:
+        db.close()
+    return {"replies": replies_result, "send": send_result}
+
+
+async def _agent_loop(interval_seconds: int):
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            db = SessionLocal()
-            try:
-                result = await asyncio.to_thread(run_send_cycle_all_orgs, db)
-            finally:
-                db.close()
-            if result["sent"] or result["errors"]:
-                logger.info("send cycle: %s", result)
+            result = await asyncio.to_thread(_run_agent_cycle)
+            if (result["send"]["sent"] or result["send"]["errors"]
+                    or result["replies"]["processed"] or result["replies"]["errors"]):
+                logger.info("agent cycle: %s", result)
         except Exception:  # keep the loop alive through transient failures
-            logger.exception("send cycle crashed; continuing")
+            logger.exception("agent cycle crashed; continuing")
 
 
 @asynccontextmanager
@@ -35,7 +54,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     task = None
     if settings.scheduler_enabled:
-        task = asyncio.create_task(_send_loop(settings.scheduler_interval_seconds))
+        task = asyncio.create_task(_agent_loop(settings.scheduler_interval_seconds))
     yield
     if task is not None:
         task.cancel()
@@ -58,6 +77,7 @@ app.include_router(leads.router)
 app.include_router(icp.router)
 app.include_router(apollo.router)
 app.include_router(bookings.router)
+app.include_router(replies.router)
 app.include_router(scheduler.router)
 
 

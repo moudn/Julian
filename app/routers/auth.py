@@ -35,6 +35,7 @@ class OrgSettingsIn(BaseModel):
     score_threshold: float | None = None
     product_description: str | None = Field(default=None, max_length=2000)
     email_footer: str | None = Field(default=None, max_length=1000)
+    knowledge_base: str | None = Field(default=None, max_length=10000)
 
 
 class OrgOut(BaseModel):
@@ -44,6 +45,7 @@ class OrgOut(BaseModel):
     score_threshold: float
     product_description: str | None
     email_footer: str | None
+    knowledge_base: str | None
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=201)
@@ -92,6 +94,7 @@ def me(org: Organization = Depends(get_current_org)):
         score_threshold=org.score_threshold,
         product_description=org.product_description,
         email_footer=org.email_footer,
+        knowledge_base=org.knowledge_base,
     )
 
 
@@ -110,6 +113,8 @@ def update_org_settings(
         org.product_description = request.product_description
     if request.email_footer is not None:
         org.email_footer = request.email_footer
+    if request.knowledge_base is not None:
+        org.knowledge_base = request.knowledge_base
     db.commit()
     db.refresh(org)
     return OrgOut(
@@ -117,4 +122,5 @@ def update_org_settings(
         score_threshold=org.score_threshold,
         product_description=org.product_description,
         email_footer=org.email_footer,
+        knowledge_base=org.knowledge_base,
     )

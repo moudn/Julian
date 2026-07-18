@@ -48,6 +48,20 @@ class MessageStatus(str, enum.Enum):
     SKIPPED = "SKIPPED"
 
 
+class MessageDirection(str, enum.Enum):
+    INBOUND = "INBOUND"
+    OUTBOUND = "OUTBOUND"
+
+
+class ReplyCategory(str, enum.Enum):
+    INTERESTED = "INTERESTED"
+    QUESTION = "QUESTION"
+    COMPLEX = "COMPLEX"
+    NOT_INTERESTED = "NOT_INTERESTED"
+    UNSUBSCRIBE = "UNSUBSCRIBE"
+    OUT_OF_OFFICE = "OUT_OF_OFFICE"
+
+
 class Organization(Base):
     """A tenant. Every lead, rule, booking, user, and credential belongs to one."""
 
@@ -64,6 +78,9 @@ class Organization(Base):
     # Appended to every outgoing sequence email. Should carry the tenant's
     # opt-out line and postal address (CAN-SPAM/GDPR).
     email_footer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Pre-approved answers Julian may draw on when replying to basic
+    # questions. Questions not answerable from this text escalate to a human.
+    knowledge_base: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)
@@ -218,6 +235,32 @@ class OutreachMessage(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    lead: Mapped["Lead"] = relationship()
+
+
+class ConversationMessage(Base):
+    """One email in a lead's conversation thread (inbound or outbound)."""
+
+    __tablename__ = "conversation_messages"
+    __table_args__ = (
+        UniqueConstraint("org_id", "gmail_message_id", name="uq_conv_gmail"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    direction: Mapped[MessageDirection] = mapped_column(
+        Enum(MessageDirection, native_enum=False, length=16)
+    )
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    body: Mapped[str] = mapped_column(Text)
+    gmail_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # For inbound messages: how Julian triaged it, and what he suggested
+    category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    suggested_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     lead: Mapped["Lead"] = relationship()
 
