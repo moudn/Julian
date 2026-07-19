@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from app.adapters.google_oauth import (
     GoogleOAuthError,
     build_authorize_url,
+    consume_state,
     exchange_code,
-    parse_state,
 )
 from app.auth import get_current_org
 from app.database import get_db
@@ -33,10 +33,11 @@ class StatusOut(BaseModel):
 
 
 @router.get("/connect", response_model=ConnectOut)
-def connect(org: Organization = Depends(get_current_org)):
+def connect(org: Organization = Depends(get_current_org),
+            db: Session = Depends(get_db)):
     """Start the OAuth flow: returns the Google consent URL for this org."""
     try:
-        return ConnectOut(authorize_url=build_authorize_url(org.id))
+        return ConnectOut(authorize_url=build_authorize_url(db, org.id))
     except GoogleOAuthError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -46,10 +47,11 @@ def callback(code: str, state: str, db: Session = Depends(get_db)):
     """Google redirects here after consent. Stores the org's refresh token.
 
     Unauthenticated by design (the browser lands here from Google); the org
-    is identified by the HMAC-signed state parameter.
+    is identified by a single-use, short-lived state token minted at
+    /connect — unknown, reused, or expired states are rejected.
     """
     try:
-        org_id = parse_state(state)
+        org_id = consume_state(db, state)
         tokens = exchange_code(code)
     except GoogleOAuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -73,9 +75,27 @@ def callback(code: str, state: str, db: Session = Depends(get_db)):
     credential.access_token = tokens.get("access_token")
     credential.token_expiry = utcnow() + timedelta(
         seconds=int(tokens.get("expires_in", 3600)))
+    credential.account_email = _fetch_account_email(credential.access_token)
     db.commit()
 
     return {"status": "connected", "message": "Google Calendar is now connected."}
+
+
+def _fetch_account_email(access_token: str | None) -> str | None:
+    """Best-effort lookup of the connected Gmail address (for display)."""
+    if not access_token:
+        return None
+    import httpx
+
+    from app.config import get_settings
+    try:
+        response = httpx.get(
+            f"{get_settings().gmail_api_base.rstrip('/')}/users/me/profile",
+            headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
+        response.raise_for_status()
+        return response.json().get("emailAddress")
+    except httpx.HTTPError:
+        return None
 
 
 @router.get("/status", response_model=StatusOut)

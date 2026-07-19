@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.security import EncryptedText
 
 
 def utcnow() -> datetime:
@@ -81,6 +82,13 @@ class Organization(Base):
     # Pre-approved answers Julian may draw on when replying to basic
     # questions. Questions not answerable from this text escalate to a human.
     knowledge_base: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # IANA timezone for business-hours sending and slot proposals
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    # Hard ceiling on sequence emails per day (a ramp-up applies below it)
+    daily_send_cap: Mapped[int] = mapped_column(Integer, default=50)
+    # When False (default), Julian never auto-sends knowledge-base answers —
+    # they're delivered to the rep as suggested replies instead.
+    auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)
@@ -136,8 +144,8 @@ class GoogleCredential(Base):
     org_id: Mapped[int] = mapped_column(
         ForeignKey("organizations.id"), unique=True, index=True
     )
-    refresh_token: Mapped[str] = mapped_column(Text)
-    access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refresh_token: Mapped[str] = mapped_column(EncryptedText)
+    access_token: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     token_expiry: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -237,6 +245,38 @@ class OutreachMessage(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lead: Mapped["Lead"] = relationship()
+
+
+class OAuthState(Base):
+    """Single-use, expiring state token for the Google OAuth flow.
+
+    Prevents account-linking CSRF: a callback is only accepted for a state
+    we minted for that org within the last few minutes, exactly once.
+    """
+
+    __tablename__ = "oauth_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SuppressedEmail(Base):
+    """Per-org do-not-contact list. Opt-outs land here permanently and can
+    never be re-imported or re-mailed by that org (CAN-SPAM/GDPR)."""
+
+    __tablename__ = "suppressed_emails"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_suppress_org_email"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    reason: Mapped[str] = mapped_column(String(32), default="unsubscribed")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ConversationMessage(Base):

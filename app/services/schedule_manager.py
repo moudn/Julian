@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.adapters.calendar import CalendarAdapter
+from app.adapters.calendar import CalendarAdapter, safe_zone
 from app.adapters.email_sender import EmailSenderAdapter
 from app.models import BookingStatus, Lead, LeadState, Organization, PendingBooking
 from app.state_machine import transition
@@ -33,6 +33,12 @@ class ScheduleManager:
         self.email_sender = email_sender
         self.org = org
 
+    def _fmt(self, moment: datetime) -> str:
+        """Format a time in the org's timezone with an explicit zone label."""
+        zone = safe_zone(self.org.timezone)
+        local = moment.astimezone(zone)
+        return f"{local.strftime('%A %B %d, %H:%M')} {local.tzname() or self.org.timezone}"
+
     def propose_meeting(self, db: Session, lead: Lead,
                         duration_minutes: int = 30, slot_count: int = 3) -> list[datetime]:
         """Find free slots on the rep's calendar and offer them to the lead."""
@@ -44,7 +50,8 @@ class ScheduleManager:
                 f"ENGAGED to propose a meeting (currently {lead.state.value})"
             )
 
-        slots = self.calendar.find_available_slots(duration_minutes, slot_count)
+        slots = self.calendar.find_available_slots(
+            duration_minutes, slot_count, tz_name=self.org.timezone)
         if len(slots) < 2:
             raise ScheduleError("Could not find at least 2 available slots on the calendar")
 
@@ -54,7 +61,7 @@ class ScheduleManager:
 
         if lead.email:
             slot_lines = "\n".join(
-                f"  {index}. {start.strftime('%A %B %d, %H:%M')} UTC ({duration_minutes} min)"
+                f"  {index}. {self._fmt(start)} ({duration_minutes} min)"
                 for index, (start, _) in enumerate(slots, start=1)
             )
             self.email_sender.send(
@@ -111,7 +118,7 @@ class ScheduleManager:
             subject=f"Approval needed: meeting with {lead.name}",
             body=(
                 f"{lead.name} ({lead.company or 'unknown company'}) picked "
-                f"{slot_start.strftime('%A %B %d, %H:%M')} UTC.\n\n"
+                f"{self._fmt(slot_start)}.\n\n"
                 f"Approve with: POST /approve_booking/{booking.id}\n"
                 f"Reject with:  POST /bookings/{booking.id}/reject\n\n"
                 "No calendar event has been created yet."
@@ -129,6 +136,20 @@ class ScheduleManager:
         if lead.state != LeadState.AWAITING_APPROVAL:
             raise ScheduleError(
                 f"Lead must be in AWAITING_APPROVAL to confirm (currently {lead.state.value})"
+            )
+
+        # The slot was free at proposal time; things change — re-check before
+        # putting it on the calendar. (SQLite returns naive datetimes.)
+        slot_start = booking.slot_start
+        slot_end = booking.slot_end
+        if slot_start.tzinfo is None:
+            slot_start = slot_start.replace(tzinfo=timezone.utc)
+        if slot_end.tzinfo is None:
+            slot_end = slot_end.replace(tzinfo=timezone.utc)
+        if not self.calendar.is_slot_free(slot_start, slot_end):
+            raise ScheduleError(
+                "That slot is no longer free on the calendar. Reject this "
+                "booking so the lead can pick another time."
             )
 
         attendees = [booking.rep_email] + ([lead.email] if lead.email else [])
@@ -154,7 +175,7 @@ class ScheduleManager:
                 body=(
                     f"Hi {lead.name.split()[0]},\n\n"
                     f"Your call is confirmed for "
-                    f"{booking.slot_start.strftime('%A %B %d, %H:%M')} UTC. "
+                    f"{self._fmt(booking.slot_start)}. "
                     "A calendar invitation is on its way.\n\nSee you then!"
                 ),
             )

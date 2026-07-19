@@ -23,7 +23,9 @@ class EmailSenderAdapter:
         self.sent.append(record)
 
         if not self.settings.smtp_host:
-            logger.info("[email:console] to=%s subject=%r\n%s", to, subject, body)
+            # Metadata only — message bodies are PII and must stay out of logs
+            logger.info("[email:console] to=%s subject=%r (%d chars, not sent: "
+                        "SMTP not configured)", to, subject, len(body))
             return
 
         message = EmailMessage()
