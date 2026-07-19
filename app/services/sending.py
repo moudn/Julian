@@ -8,10 +8,13 @@ automatically.
 """
 
 import logging
-from datetime import timedelta
+import random
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
+from app.adapters.calendar import safe_zone
 
 from app.adapters.email_sender import EmailSenderAdapter
 from app.adapters.gmail import GmailError, GmailSenderAdapter
@@ -35,6 +38,40 @@ DEFAULT_FOOTER = "\n\n--\nIf you'd rather not hear from me again, just reply \"n
 class SendingError(Exception):
     pass
 
+# Deliverability guardrails: new orgs ramp up slowly (Gmail flags sudden
+# volume from quiet accounts), and nothing sends outside local business hours.
+RAMP_BASE_PER_DAY = 20
+SEND_WINDOW = (8, 18)  # local hours
+JITTER_MINUTES = 45
+
+
+def effective_daily_cap(org: Organization) -> int:
+    created = org.created_at
+    if created is not None and created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    weeks_active = 0
+    if created is not None:
+        weeks_active = max(0, (datetime.now(timezone.utc) - created).days // 7)
+    return min(org.daily_send_cap, RAMP_BASE_PER_DAY * (weeks_active + 1))
+
+
+def _in_send_window(org: Organization, now: datetime) -> bool:
+    from app.config import get_settings
+    if not get_settings().enforce_send_window:
+        return True
+    local = now.astimezone(safe_zone(org.timezone))
+    return local.weekday() < 5 and SEND_WINDOW[0] <= local.hour < SEND_WINDOW[1]
+
+
+def _sent_today(db: Session, org: Organization, now: datetime) -> int:
+    day_start = now.astimezone(safe_zone(org.timezone)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return db.scalar(select(func.count(OutreachMessage.id)).where(
+        OutreachMessage.org_id == org.id,
+        OutreachMessage.status == MessageStatus.SENT,
+        OutreachMessage.sent_at >= day_start.astimezone(timezone.utc),
+    )) or 0
+
 
 def activate_sequence(db: Session, lead: Lead, org: Organization) -> list[OutreachMessage]:
     """Approve all drafts and schedule them; the lead goes on autopilot."""
@@ -45,6 +82,17 @@ def activate_sequence(db: Session, lead: Lead, org: Organization) -> list[Outrea
         )
     if not lead.email:
         raise SendingError("Lead has no email address")
+    if not (org.email_footer or "").strip():
+        raise SendingError(
+            "Set your email footer first (Settings): it must include an "
+            "opt-out line and your postal address — required by anti-spam "
+            "law (CAN-SPAM) before Julian can send on your behalf."
+        )
+    from app.services.suppression import is_suppressed
+    if is_suppressed(db, org.id, lead.email):
+        raise SendingError(
+            f"{lead.email} previously opted out and cannot be contacted again."
+        )
 
     drafts = db.scalars(
         select(OutreachMessage)
@@ -61,7 +109,10 @@ def activate_sequence(db: Session, lead: Lead, org: Organization) -> list[Outrea
     now = utcnow()
     for message in drafts:
         message.status = MessageStatus.APPROVED
-        message.scheduled_at = now + timedelta(days=message.send_after_days)
+        # jitter so sends don't fire in machine-like exact intervals
+        message.scheduled_at = (now + timedelta(days=message.send_after_days)
+                                + timedelta(minutes=random.randint(0, JITTER_MINUTES)
+                                            if message.send_after_days else 0))
 
     transition(lead, LeadState.SEQUENCE_ACTIVE)
     db.commit()
@@ -87,15 +138,26 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
 
     Only leads still in SEQUENCE_ACTIVE receive mail; anything that left the
     state (replied, unsubscribed, booked) is skipped and the pending steps
-    are marked SKIPPED so they can never fire later.
+    are marked SKIPPED so they can never fire later. Sends happen only in
+    the org's local business hours and stop at the daily cap (ramp-aware).
     """
     now = utcnow()
+    if not _in_send_window(org, now):
+        return {"sent": 0, "skipped": 0, "errors": []}
+
+    remaining_today = effective_daily_cap(org) - _sent_today(db, org, now)
+    if remaining_today <= 0:
+        return {"sent": 0, "skipped": 0, "errors": []}
+
+    # FOR UPDATE SKIP LOCKED prevents double-sends when several workers run
+    # the cycle concurrently (no-op on SQLite — run one worker there).
     due = db.scalars(
         select(OutreachMessage)
         .where(OutreachMessage.org_id == org.id,
                OutreachMessage.status == MessageStatus.APPROVED,
                OutreachMessage.scheduled_at <= now)
         .order_by(OutreachMessage.lead_id, OutreachMessage.step)
+        .with_for_update(skip_locked=True)
     ).all()
 
     sent, skipped, errors = 0, 0, []
@@ -111,6 +173,8 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
             message.status = MessageStatus.SKIPPED
             skipped += 1
             continue
+        if sent >= remaining_today:
+            break  # cap reached; the rest stays queued for tomorrow
         try:
             sender.send(to=lead.email, subject=message.subject,
                         body=message.body + (footer or ""))

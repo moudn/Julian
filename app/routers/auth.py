@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from zoneinfo import ZoneInfo
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -6,7 +8,9 @@ from sqlalchemy.orm import Session
 from app.auth import generate_api_key, get_current_org, get_current_user, hash_password, verify_password
 from app.config import get_settings
 from app.database import get_db
-from app.models import Organization, User
+from app.deps import get_email_sender
+from app.models import ApiKey, Organization, User
+from app.security import make_reset_token, rate_limit, verify_reset_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -36,6 +40,8 @@ class OrgSettingsIn(BaseModel):
     product_description: str | None = Field(default=None, max_length=2000)
     email_footer: str | None = Field(default=None, max_length=1000)
     knowledge_base: str | None = Field(default=None, max_length=10000)
+    timezone: str | None = Field(default=None, max_length=64)
+    auto_reply_enabled: bool | None = None
 
 
 class OrgOut(BaseModel):
@@ -46,11 +52,15 @@ class OrgOut(BaseModel):
     product_description: str | None
     email_footer: str | None
     knowledge_base: str | None
+    timezone: str
+    auto_reply_enabled: bool
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=201)
-def signup(request: SignupRequest, db: Session = Depends(get_db)):
+def signup(request: SignupRequest, http_request: Request,
+           db: Session = Depends(get_db)):
     """Create a new organization with its first user; returns an API key."""
+    rate_limit(http_request, "signup", limit=5, window_seconds=60)
     if db.scalar(select(User).where(User.email == request.email)):
         raise HTTPException(status_code=409, detail="A user with this email already exists")
 
@@ -77,14 +87,88 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
+def login(request: LoginRequest, http_request: Request,
+          db: Session = Depends(get_db)):
     """Exchange email + password for a fresh API key."""
+    rate_limit(http_request, "login", limit=10, window_seconds=60)
     user = db.scalar(select(User).where(User.email == request.email))
     if user is None or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     return AuthResponse(
         api_key=generate_api_key(db, user), organization_id=user.org_id, user_id=user.id
     )
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/forgot_password")
+def forgot_password(request: ForgotPasswordRequest, http_request: Request,
+                    db: Session = Depends(get_db),
+                    email_sender=Depends(get_email_sender)):
+    """Email a one-hour reset token. Always answers 200 (no account probing)."""
+    rate_limit(http_request, "forgot", limit=5, window_seconds=300)
+    user = db.scalar(select(User).where(User.email == request.email))
+    if user is not None:
+        token = make_reset_token(user.id)
+        email_sender.send(
+            to=user.email,
+            subject="Reset your Julian password",
+            body=(f"Hi {user.name},\n\nUse this token to set a new password "
+                  f"(valid for 1 hour):\n\n{token}\n\n"
+                  "POST it with your new password to /auth/reset_password, or "
+                  "paste it into the dashboard's reset form.\n\n"
+                  "If you didn't request this, you can ignore this email."),
+        )
+    return {"status": "ok",
+            "message": "If that email has an account, a reset token was sent."}
+
+
+@router.post("/reset_password")
+def reset_password(request: ResetPasswordRequest, http_request: Request,
+                   db: Session = Depends(get_db)):
+    rate_limit(http_request, "reset", limit=10, window_seconds=300)
+    user_id = verify_reset_token(request.token)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    user.password_hash = hash_password(request.new_password)
+    db.commit()
+    return {"status": "ok", "message": "Password updated — log in to get a new API key."}
+
+
+class ApiKeyOut(BaseModel):
+    id: int
+    prefix: str
+    created_at: str
+
+
+@router.get("/keys", response_model=list[ApiKeyOut])
+def list_keys(user: User = Depends(get_current_user),
+              db: Session = Depends(get_db)):
+    keys = db.scalars(select(ApiKey).where(ApiKey.org_id == user.org_id)
+                      .order_by(ApiKey.created_at)).all()
+    return [ApiKeyOut(id=k.id, prefix=k.prefix,
+                      created_at=k.created_at.isoformat()) for k in keys]
+
+
+@router.delete("/keys/{key_id}", status_code=204)
+def revoke_key(key_id: int, user: User = Depends(get_current_user),
+               db: Session = Depends(get_db)):
+    """Revoke an API key immediately (e.g. after a leak)."""
+    key = db.get(ApiKey, key_id)
+    if key is None or key.org_id != user.org_id:
+        raise HTTPException(status_code=404, detail="Key not found")
+    db.delete(key)
+    db.commit()
 
 
 @router.get("/me", response_model=OrgOut)
@@ -95,6 +179,8 @@ def me(org: Organization = Depends(get_current_org)):
         product_description=org.product_description,
         email_footer=org.email_footer,
         knowledge_base=org.knowledge_base,
+        timezone=org.timezone,
+        auto_reply_enabled=org.auto_reply_enabled,
     )
 
 
@@ -115,6 +201,16 @@ def update_org_settings(
         org.email_footer = request.email_footer
     if request.knowledge_base is not None:
         org.knowledge_base = request.knowledge_base
+    if request.timezone is not None:
+        try:
+            ZoneInfo(request.timezone)
+        except Exception:
+            raise HTTPException(status_code=422,
+                                detail=f"Unknown timezone {request.timezone!r} "
+                                       "(use an IANA name like Europe/London)")
+        org.timezone = request.timezone
+    if request.auto_reply_enabled is not None:
+        org.auto_reply_enabled = request.auto_reply_enabled
     db.commit()
     db.refresh(org)
     return OrgOut(
@@ -123,4 +219,6 @@ def update_org_settings(
         product_description=org.product_description,
         email_footer=org.email_footer,
         knowledge_base=org.knowledge_base,
+        timezone=org.timezone,
+        auto_reply_enabled=org.auto_reply_enabled,
     )

@@ -38,6 +38,7 @@ from app.models import (
 )
 from app.services.schedule_manager import ScheduleError, ScheduleManager
 from app.services.sending import get_outbound_sender
+from app.services.suppression import suppress_email
 from app.state_machine import transition
 
 logger = logging.getLogger(__name__)
@@ -189,6 +190,7 @@ def ingest_reply(
 
     if category == ReplyCategory.UNSUBSCRIBE:
         _retire_pending_steps(db, lead)
+        suppress_email(db, org.id, lead.email, "unsubscribed")
         if lead.state != LeadState.OUTREACH_PENDING:
             transition(lead, LeadState.UNSUBSCRIBED)
         else:
@@ -196,6 +198,7 @@ def ingest_reply(
 
     elif category == ReplyCategory.NOT_INTERESTED:
         _retire_pending_steps(db, lead)
+        suppress_email(db, org.id, lead.email, "not_interested")
         if lead.state != LeadState.OUTREACH_PENDING:
             transition(lead, LeadState.NOT_INTERESTED)
         else:
@@ -204,7 +207,8 @@ def ingest_reply(
     elif category == ReplyCategory.OUT_OF_OFFICE:
         _postpone_pending_steps(db, lead, OOO_POSTPONE_DAYS)
 
-    elif category == ReplyCategory.QUESTION and result.get("answer"):
+    elif (category == ReplyCategory.QUESTION and result.get("answer")
+          and org.auto_reply_enabled):
         # Julian answers from the pre-approved knowledge base only
         _retire_pending_steps(db, lead)
         if lead.state in (LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING):
@@ -242,7 +246,7 @@ def ingest_reply(
                 direction=MessageDirection.OUTBOUND,
                 subject="Re: " + (subject or "our call"),
                 body="[Julian proposed meeting times] "
-                     + ", ".join(s.strftime("%A %B %d %H:%M UTC") for s in slots),
+                     + ", ".join(manager._fmt(s) for s in slots),
             ))
             if org.sales_rep_email:
                 notifier.send(
@@ -268,7 +272,8 @@ def ingest_reply(
                           LeadState.MEETING_PROPOSED):
             _to_engaged(lead)
         escalated = True
-        _notify_rep(notifier, org, lead, body, result.get("suggested_reply") or "")
+        _notify_rep(notifier, org, lead, body,
+                    result.get("suggested_reply") or result.get("answer") or "")
 
     db.commit()
     return {
@@ -277,7 +282,8 @@ def ingest_reply(
         "lead_state": lead.state.value,
         "auto_replied": auto_replied,
         "escalated": escalated,
-        "suggested_reply": result.get("suggested_reply") or None,
+        "suggested_reply": (result.get("suggested_reply")
+                            or result.get("answer") or None),
         "booking_id": None,
     }
 
@@ -314,7 +320,7 @@ def _handle_slot_selection(db: Session, lead: Lead, org: Organization, body: str
         sender = outbound_sender or get_outbound_sender(db, org)
         ack = (f"Hi {lead.name.split()[0]},\n\n"
                f"Perfect — I've pencilled in "
-               f"{chosen.strftime('%A %B %d, %H:%M')} UTC. You'll receive a "
+               f"{manager._fmt(chosen)}. You'll receive a "
                f"calendar invitation shortly.\n\nSpeak soon")
         sender.send(to=lead.email, subject="Re: " + (subject or "our call"), body=ack)
         db.add(ConversationMessage(

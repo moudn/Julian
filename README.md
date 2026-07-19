@@ -195,6 +195,38 @@ See `.env.example`. Key variables: `DATABASE_URL`, `SECRET_KEY`,
 Sales-rep email and scoring threshold are per-organization settings
 (`PATCH /auth/org`), not global env vars.
 
+## Security & compliance hardening
+
+- Google OAuth uses single-use, 10-minute state tokens (account-linking
+  CSRF protection); OAuth tokens are encrypted at rest (`ENCRYPTION_KEY`)
+- Login/signup/reset endpoints are rate-limited; password reset via
+  emailed one-hour tokens (`/auth/forgot_password`, `/auth/reset_password`);
+  API keys can be listed and revoked (`/auth/keys`)
+- Deliverability guardrails: per-org daily send caps with new-account
+  ramp-up, jitter, and org-local business-hours sending
+  (`SCHEDULER`/`ENFORCE_SEND_WINDOW` settings); per-org IANA `timezone`
+  drives sending windows and meeting-slot proposals
+- Compliance: activation requires an email footer (opt-out + postal
+  address); opt-outs land on a permanent per-org suppression list that
+  blocks re-import and re-sending; `DELETE /leads/{id}` erases a lead
+  (GDPR right to erasure, suppresses by default);
+  `GET /leads/{id}/export` provides data-subject access; email bodies are
+  kept out of server logs
+- Julian never auto-sends knowledge-base answers unless the org opts in
+  (`auto_reply_enabled`); the classifier treats reply content as untrusted
+  (prompt-injection hardening); bookings re-check calendar availability at
+  approval time
+- Security headers (CSP, nosniff, frame-deny) on all responses; CSV
+  imports capped at 2 MB / 5,000 rows; lead listing is paginated with
+  `GET /leads/stats` for dashboard counts
+
+## Database migrations
+
+Schema is managed with Alembic (`migrations/`). For a new database:
+`alembic upgrade head`. After changing models:
+`alembic revision --autogenerate -m "describe change"` then review and
+`alembic upgrade head`. (Dev/tests still auto-create tables.)
+
 ## Tests
 
 ```bash

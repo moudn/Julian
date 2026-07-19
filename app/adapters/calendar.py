@@ -10,6 +10,7 @@ import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -20,10 +21,18 @@ class CalendarError(Exception):
     pass
 
 
+def safe_zone(tz_name: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(tz_name or "UTC")
+    except Exception:
+        return ZoneInfo("UTC")
+
+
 class CalendarAdapter(ABC):
     @abstractmethod
     def find_available_slots(
-        self, duration_minutes: int, count: int, search_days: int = 7
+        self, duration_minutes: int, count: int, search_days: int = 7,
+        tz_name: str = "UTC",
     ) -> list[tuple[datetime, datetime]]:
         """Return up to `count` free (start, end) slots within business hours."""
 
@@ -34,6 +43,10 @@ class CalendarAdapter(ABC):
     ) -> str:
         """Create a calendar event and return its ID."""
 
+    @abstractmethod
+    def is_slot_free(self, start: datetime, end: datetime) -> bool:
+        """Re-check availability (used at approval time)."""
+
 
 def _business_hour_slots(
     busy: list[tuple[datetime, datetime]],
@@ -41,17 +54,20 @@ def _business_hour_slots(
     count: int,
     search_days: int,
     now: datetime | None = None,
+    tz_name: str = "UTC",
 ) -> list[tuple[datetime, datetime]]:
-    """Walk business hours (9:00–17:00 UTC, weekdays) and pick free slots."""
-    now = now or datetime.now(timezone.utc)
+    """Walk the org's business hours (9:00–17:00 local, weekdays) and pick
+    free slots. Returned datetimes are timezone-aware in the org's zone."""
+    zone = safe_zone(tz_name)
+    now = (now or datetime.now(timezone.utc)).astimezone(zone)
     duration = timedelta(minutes=duration_minutes)
     slots: list[tuple[datetime, datetime]] = []
 
     day = now.date() + timedelta(days=1)
     for _ in range(search_days):
         if day.weekday() < 5:  # Monday–Friday
-            cursor = datetime.combine(day, time(9, 0), tzinfo=timezone.utc)
-            day_end = datetime.combine(day, time(17, 0), tzinfo=timezone.utc)
+            cursor = datetime.combine(day, time(9, 0), tzinfo=zone)
+            day_end = datetime.combine(day, time(17, 0), tzinfo=zone)
             while cursor + duration <= day_end and len(slots) < count:
                 candidate = (cursor, cursor + duration)
                 overlaps = any(b_start < candidate[1] and b_end > candidate[0]
@@ -105,22 +121,31 @@ class GoogleCalendarAdapter(CalendarAdapter):
             raise CalendarError(f"Google Calendar request failed: {exc}") from exc
         return response.json()
 
-    def find_available_slots(
-        self, duration_minutes: int, count: int, search_days: int = 7
-    ) -> list[tuple[datetime, datetime]]:
-        now = datetime.now(timezone.utc)
+    def _busy_between(self, start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
         data = self._request("POST", "/freeBusy", {
-            "timeMin": now.isoformat(),
-            "timeMax": (now + timedelta(days=search_days + 1)).isoformat(),
+            "timeMin": start.isoformat(),
+            "timeMax": end.isoformat(),
             "items": [{"id": self.calendar_id}],
         })
         busy_raw = data.get("calendars", {}).get(self.calendar_id, {}).get("busy", [])
-        busy = [
+        return [
             (datetime.fromisoformat(b["start"].replace("Z", "+00:00")),
              datetime.fromisoformat(b["end"].replace("Z", "+00:00")))
             for b in busy_raw
         ]
-        return _business_hour_slots(busy, duration_minutes, count, search_days, now)
+
+    def find_available_slots(
+        self, duration_minutes: int, count: int, search_days: int = 7,
+        tz_name: str = "UTC",
+    ) -> list[tuple[datetime, datetime]]:
+        now = datetime.now(timezone.utc)
+        busy = self._busy_between(now, now + timedelta(days=search_days + 1))
+        return _business_hour_slots(busy, duration_minutes, count, search_days,
+                                    now, tz_name)
+
+    def is_slot_free(self, start: datetime, end: datetime) -> bool:
+        busy = self._busy_between(start, end)
+        return not any(b_start < end and b_end > start for b_start, b_end in busy)
 
     def create_event(
         self, summary: str, start: datetime, end: datetime, attendee_emails: list[str],
@@ -144,9 +169,15 @@ class InMemoryCalendarAdapter(CalendarAdapter):
         self.events: list[dict[str, Any]] = []
 
     def find_available_slots(
-        self, duration_minutes: int, count: int, search_days: int = 7
+        self, duration_minutes: int, count: int, search_days: int = 7,
+        tz_name: str = "UTC",
     ) -> list[tuple[datetime, datetime]]:
-        return _business_hour_slots(self.busy, duration_minutes, count, search_days)
+        return _business_hour_slots(self.busy, duration_minutes, count,
+                                    search_days, tz_name=tz_name)
+
+    def is_slot_free(self, start: datetime, end: datetime) -> bool:
+        return not any(b_start < end and b_end > start
+                       for b_start, b_end in self.busy)
 
     def create_event(
         self, summary: str, start: datetime, end: datetime, attendee_emails: list[str],

@@ -162,7 +162,8 @@ const ui = {
   async saveSettings(event) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target));
-    Object.keys(data).forEach((k) => { if (data[k] === "") delete data[k]; });
+    data.auto_reply_enabled = event.target.querySelector('[name="auto_reply_enabled"]')?.checked ?? undefined;
+    Object.keys(data).forEach((k) => { if (data[k] === "" || data[k] === undefined) delete data[k]; });
     if (data.score_threshold) data.score_threshold = Number(data.score_threshold);
     try {
       ORG = await api("/auth/org", { method: "PATCH", json: data });
@@ -203,9 +204,8 @@ const ui = {
 
 /* ---------- pages ---------- */
 routes.dashboard = async () => {
-  const leads = await api("/leads");
-  const counts = {};
-  leads.forEach((l) => { counts[l.state] = (counts[l.state] || 0) + 1; });
+  const stats = await api("/leads/stats");
+  const counts = stats.by_state;
   const kpi = (n, label) => `<div class="kpi"><div class="num">${n}</div><div class="lbl">${label}</div></div>`;
   const funnelRow = (state) => (counts[state] ? `
     <tr><td>${badge(state)}</td><td style="text-align:right">${counts[state]}</td></tr>` : "");
@@ -214,14 +214,14 @@ routes.dashboard = async () => {
       <span class="muted">Julian is ${counts.SEQUENCE_ACTIVE ? "working " + counts.SEQUENCE_ACTIVE + " lead(s) on autopilot" : "idle — activate a sequence to put him to work"}.</span>
     </div></div>
     <div class="grid kpis">
-      ${kpi(leads.length, "Total leads")}
+      ${kpi(stats.total, "Total leads")}
       ${kpi(counts.SEQUENCE_ACTIVE || 0, "On autopilot")}
       ${kpi((counts.ENGAGED || 0) + (counts.MEETING_PROPOSED || 0), "In conversation")}
       ${kpi(counts.AWAITING_APPROVAL || 0, "Need your approval")}
       ${kpi(counts.MEETING_CONFIRMED || 0, "Meetings booked")}
     </div>
     <div class="card"><h2>Pipeline</h2>
-      ${leads.length ? `<table>${Object.keys(STATE_LABELS).map(funnelRow).join("")}</table>`
+      ${stats.total ? `<table>${Object.keys(STATE_LABELS).map(funnelRow).join("")}</table>`
         : `<div class="empty">No leads yet — import a CSV from the Leads page.</div>`}
     </div>`;
   refreshApprovalsBadge();
@@ -368,8 +368,14 @@ routes.settings = async () => {
               <textarea name="product_description" placeholder="e.g. We build payroll software for restaurants that cuts admin time 80%">${esc(ORG.product_description || "")}</textarea></label>
             <label>Knowledge base (the ONLY facts Julian may use to answer questions)
               <textarea name="knowledge_base" placeholder="Pricing: ... Integrations: ... Onboarding: ...">${esc(ORG.knowledge_base || "")}</textarea></label>
-            <label>Email footer (opt-out line + postal address)
-              <textarea name="email_footer" placeholder='--\nIf you&#39;d rather not hear from me, just reply "no thanks".'>${esc(ORG.email_footer || "")}</textarea></label>
+            <label>Email footer — must include an opt-out line and your postal address
+              (required by anti-spam law before Julian can send)
+              <textarea name="email_footer" placeholder='--\nAcme Inc, 1 Main St, Springfield.\nIf you&#39;d rather not hear from me, just reply "no thanks".'>${esc(ORG.email_footer || "")}</textarea></label>
+            <label>Timezone (IANA name — sending hours &amp; meeting slots use this)
+              <input name="timezone" value="${esc(ORG.timezone || "UTC")}" placeholder="Europe/London"></label>
+            <label><input type="checkbox" name="auto_reply_enabled" style="width:auto"
+              ${ORG.auto_reply_enabled ? "checked" : ""}>
+              Let Julian auto-send knowledge-base answers (off = he drafts, you approve)</label>
             <button class="btn primary" type="submit">Save</button>
           </form>
         </div>

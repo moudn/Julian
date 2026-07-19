@@ -160,7 +160,10 @@ def test_question_with_kb_answer_gets_auto_reply(client, monkeypatch, email_send
     from app.services import replies as replies_service
 
     lead_id = _active_lead(client)  # uses the real (fallback) LLM adapter
-    client.patch("/auth/org", json={"knowledge_base": "Pricing: flat monthly fee per seat."})
+    client.patch("/auth/org", json={
+        "knowledge_base": "Pricing: flat monthly fee per seat.",
+        "auto_reply_enabled": True,
+    })
 
     class KBLlm:
         def classify_reply(self, lead, org, reply_text, thread=None):

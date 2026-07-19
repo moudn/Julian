@@ -40,11 +40,18 @@ def _extract_fields(row: dict[str, str]) -> dict[str, Any]:
     return fields
 
 
+MAX_CSV_BYTES = 2 * 1024 * 1024
+MAX_CSV_ROWS = 5000
+
+
 def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int, list[str]]:
     """Parse a CSV file and create leads for one organization.
 
-    Returns (imported, skipped, errors).
+    Returns (imported, skipped, errors). Suppressed addresses (prior
+    opt-outs) are never re-imported.
     """
+    if len(content) > MAX_CSV_BYTES:
+        return 0, 0, [f"File too large (max {MAX_CSV_BYTES // (1024 * 1024)} MB)"]
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -54,15 +61,24 @@ def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int
     if not reader.fieldnames:
         return 0, 0, ["CSV file is empty"]
 
+    from app.services.suppression import is_suppressed
+
     imported, skipped, errors = 0, 0, []
     seen_emails: set[str] = set()
     for line_number, row in enumerate(reader, start=2):
+        if line_number - 1 > MAX_CSV_ROWS:
+            errors.append(f"Stopped at {MAX_CSV_ROWS} rows (file truncated)")
+            break
         fields = _extract_fields(row)
         if not fields.get("name"):
             skipped += 1
             errors.append(f"line {line_number}: missing name")
             continue
         email = fields.get("email")
+        if email and is_suppressed(db, org_id, email):
+            skipped += 1
+            errors.append(f"line {line_number}: {email} previously opted out")
+            continue
         if email and (email in seen_emails
                       or db.scalar(select(Lead).where(
                           Lead.email == email, Lead.org_id == org_id))):

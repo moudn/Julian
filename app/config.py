@@ -8,8 +8,12 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./sales_agent.db"
 
-    # Signs OAuth state tokens; set a long random value in production
+    # Signs password-reset tokens; set a long random value in production
     secret_key: str = "dev-secret-change-me"
+    # Fernet key for encrypting OAuth tokens at rest. Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Empty = derived from secret_key (acceptable only in development).
+    encryption_key: str = ""
 
     # Scoring default for new organizations
     score_threshold: int = 50
@@ -36,6 +40,8 @@ class Settings(BaseSettings):
     # scheduler_enabled=false relies on POST /scheduler/run (cron) instead.
     scheduler_enabled: bool = True
     scheduler_interval_seconds: int = 60
+    # Only send within org-local business hours (disable for testing only)
+    enforce_send_window: bool = True
 
     # Stripe billing — leave stripe_secret_key empty to disable billing
     # entirely (all endpoints open; good for development)

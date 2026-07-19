@@ -6,6 +6,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///./test_sales_agent.db")
 os.environ.setdefault("SCORE_THRESHOLD", "50")
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
+os.environ.setdefault("ENFORCE_SEND_WINDOW", "false")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -29,7 +30,11 @@ def signup(client: TestClient, org_name="Acme Sales", email="owner@acme-sales.io
     api_key = response.json()["api_key"]
     response = client.patch(
         "/auth/org",
-        json={"sales_rep_email": rep_email},
+        json={
+            "sales_rep_email": rep_email,
+            "email_footer": "\n--\nAcme Sales, 1 Test Street, Testville. "
+                            "Reply \"no thanks\" to opt out.",
+        },
         headers={"Authorization": f"Bearer {api_key}"},
     )
     assert response.status_code == 200, response.text
@@ -50,7 +55,9 @@ def email_sender():
 def anon_client(calendar, email_sender):
     """Client with a fresh database and no credentials attached."""
     from app.deps import _dev_calendars
+    from app.security import _buckets
     _dev_calendars.clear()
+    _buckets.clear()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     app.dependency_overrides[get_calendar_adapter] = lambda: calendar

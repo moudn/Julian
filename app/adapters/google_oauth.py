@@ -7,16 +7,16 @@ Access tokens are minted from the refresh token on demand and cached until
 they expire.
 """
 
-import hashlib
-import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import GoogleCredential
+from app.models import GoogleCredential, OAuthState, utcnow
 
 SCOPES = (
     "https://www.googleapis.com/auth/calendar.events "
@@ -30,28 +30,38 @@ class GoogleOAuthError(Exception):
     pass
 
 
-def _sign(org_id: int) -> str:
-    secret = get_settings().secret_key.encode()
-    return hmac.new(secret, str(org_id).encode(), hashlib.sha256).hexdigest()
+STATE_TTL_MINUTES = 10
 
 
-def make_state(org_id: int) -> str:
-    return f"{org_id}.{_sign(org_id)}"
+def make_state(db: Session, org_id: int) -> str:
+    """Mint a single-use, short-lived state token bound to the org."""
+    token = secrets.token_urlsafe(32)
+    db.add(OAuthState(token=token, org_id=org_id,
+                      expires_at=utcnow() + timedelta(minutes=STATE_TTL_MINUTES)))
+    # opportunistic cleanup of expired states
+    db.execute(delete(OAuthState).where(OAuthState.expires_at < utcnow()))
+    db.commit()
+    return token
 
 
-def parse_state(state: str) -> int:
-    """Return the org_id encoded in a state token, or raise if tampered."""
-    try:
-        org_part, signature = state.split(".", 1)
-        org_id = int(org_part)
-    except ValueError as exc:
-        raise GoogleOAuthError("Malformed state parameter") from exc
-    if not hmac.compare_digest(signature, _sign(org_id)):
-        raise GoogleOAuthError("Invalid state signature")
-    return org_id
+def consume_state(db: Session, state: str) -> int:
+    """Validate a state token exactly once; returns the org_id or raises."""
+    record = db.scalar(select(OAuthState).where(OAuthState.token == state))
+    if record is None:
+        raise GoogleOAuthError(
+            "Unknown or already-used state token. Restart the connection "
+            "from /integrations/google/connect.")
+    db.delete(record)  # single use, even if expired
+    db.commit()
+    expires = record.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < utcnow():
+        raise GoogleOAuthError("State token expired. Restart the connection.")
+    return record.org_id
 
 
-def build_authorize_url(org_id: int) -> str:
+def build_authorize_url(db: Session, org_id: int) -> str:
     settings = get_settings()
     if not settings.google_client_id:
         raise GoogleOAuthError(
@@ -66,7 +76,7 @@ def build_authorize_url(org_id: int) -> str:
         "scope": SCOPES,
         "access_type": "offline",   # required to receive a refresh_token
         "prompt": "consent",        # re-issue refresh_token on reconnect
-        "state": make_state(org_id),
+        "state": make_state(db, org_id),
     }
     return f"{settings.google_oauth_auth_url}?{urlencode(params)}"
 
