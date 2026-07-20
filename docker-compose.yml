@@ -1,0 +1,31 @@
+# Local production-like stack: Julian + Postgres.
+#   cp .env.example .env   (fill in secrets)
+#   docker compose up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: julian
+      POSTGRES_PASSWORD: julian-local-only
+      POSTGRES_DB: julian
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U julian"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://julian:julian-local-only@db:5432/julian
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
