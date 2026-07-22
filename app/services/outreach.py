@@ -4,7 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.llm import SEQUENCE_CADENCE, OpenRouterAdapter
+from app.adapters.research import LeadResearcher
 from app.models import Lead, LeadState, MessageStatus, Organization, OutreachMessage
+from app.services.research import maybe_research
 from app.state_machine import transition
 
 
@@ -13,17 +15,21 @@ class OutreachError(Exception):
 
 
 def generate_sequence(db: Session, lead: Lead, org: Organization,
-                      llm: OpenRouterAdapter) -> list[OutreachMessage]:
+                      llm: OpenRouterAdapter,
+                      researcher: LeadResearcher | None = None) -> list[OutreachMessage]:
     """Generate (or regenerate) the full outreach sequence for a lead.
 
     Allowed while SCORED (first generation, advances the lead to
     OUTREACH_PENDING) or OUTREACH_PENDING (regenerates unsent drafts).
+    Research runs once first (if enabled) so drafts can cite real facts.
     """
     if lead.state not in (LeadState.SCORED, LeadState.OUTREACH_PENDING):
         raise OutreachError(
             f"Lead must be SCORED or OUTREACH_PENDING to generate a sequence "
             f"(currently {lead.state.value})"
         )
+
+    maybe_research(db, lead, org, researcher)
 
     # Drop existing unsent drafts; never touch sent messages
     existing = db.scalars(select(OutreachMessage).where(

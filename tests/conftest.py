@@ -7,6 +7,9 @@ os.environ.setdefault("SCORE_THRESHOLD", "50")
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
 os.environ.setdefault("ENFORCE_SEND_WINDOW", "false")
+# Research makes outbound HTTP; off by default so tests never hit the network.
+# Research-specific tests re-enable it with a mocked researcher.
+os.environ.setdefault("RESEARCH_ENABLED", "false")
 
 from fastapi.testclient import TestClient  # noqa: E402
 

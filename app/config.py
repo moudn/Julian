@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "anthropic/claude-sonnet-4.5"
 
+    # Lead research (company website + news search before writing).
+    # Global kill-switch; each org also has its own research_enabled toggle.
+    research_enabled: bool = True
+    research_timeout_seconds: int = 10
+    # Web search for company news. Tavily by default (free tier); empty key
+    # disables the news step and research falls back to the website only.
+    search_api_key: str = ""
+    search_base_url: str = "https://api.tavily.com"
+
     # Google Calendar OAuth app (create at console.cloud.google.com)
     google_client_id: str = ""
     google_client_secret: str = ""

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.adapters.llm import LLMError, OpenRouterAdapter
 from app.auth import get_current_org
 from app.database import get_db
-from app.deps import get_llm_adapter
+from app.deps import get_llm_adapter, get_researcher
 from app.models import Lead, LeadState, Organization, OutreachMessage
 from app.schemas import (
     CSVImportResult,
@@ -191,22 +191,37 @@ def generate_message(
     return MessageDraftOut(lead_id=lead.id, draft=draft, state=lead.state)
 
 
+@router.post("/{lead_id}/research", response_model=LeadOut)
+def research_lead(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+    researcher=Depends(get_researcher),
+):
+    """Research this lead now (company website + news) and store the notes."""
+    from app.services.research import run_research
+    lead = _get_lead(db, lead_id, org)
+    return run_research(db, lead, org, researcher)
+
+
 @router.post("/{lead_id}/generate_sequence", response_model=SequenceOut)
 def generate_outreach_sequence(
     lead_id: int,
     db: Session = Depends(get_db),
     org: Organization = Depends(get_current_org),
     llm: OpenRouterAdapter = Depends(get_llm_adapter),
+    researcher=Depends(get_researcher),
 ):
     """Generate the full research-backed 4-step sequence as drafts.
 
-    Step 1 first touch (PAS), step 2 bump with proof (day 3), step 3
-    value-add (day 7), step 4 breakup (day 12). Regenerating replaces unsent
-    drafts only.
+    If research is enabled and the lead hasn't been researched yet, Julian
+    researches first so the drafts can cite real facts. Step 1 first touch
+    (PAS), step 2 bump (day 3), step 3 value-add (day 7), step 4 breakup
+    (day 12). Regenerating replaces unsent drafts only.
     """
     lead = _get_lead(db, lead_id, org)
     try:
-        messages = generate_sequence(db, lead, org, llm)
+        messages = generate_sequence(db, lead, org, llm, researcher)
     except OutreachError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except LLMError as exc:

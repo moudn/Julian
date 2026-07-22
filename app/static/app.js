@@ -163,6 +163,7 @@ const ui = {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target));
     data.auto_reply_enabled = event.target.querySelector('[name="auto_reply_enabled"]')?.checked ?? undefined;
+    data.research_enabled = event.target.querySelector('[name="research_enabled"]')?.checked ?? undefined;
     Object.keys(data).forEach((k) => { if (data[k] === "" || data[k] === undefined) delete data[k]; });
     if (data.score_threshold) data.score_threshold = Number(data.score_threshold);
     try {
@@ -264,7 +265,10 @@ async function leadDetail(id) {
       onclick="ui.leadAction(${id}, '${action}', '${confirmText}')">${label}</button>`;
   const actions = [];
   if (lead.state === "NEW") actions.push(act("Score against ICP", "score", true));
-  if (lead.state === "SCORED") actions.push(act("Generate sequence", "generate_sequence", true));
+  if (lead.state === "SCORED") {
+    actions.push(act("Generate sequence", "generate_sequence", true));
+    actions.push(act("Research now", "research"));
+  }
   if (lead.state === "OUTREACH_PENDING") {
     actions.push(act("Activate autopilot", "activate_sequence", true,
       "Julian will start emailing this lead on schedule. Activate?"));
@@ -292,6 +296,14 @@ async function leadDetail(id) {
             ${lead.proposed_slots ? `<dt>Offered</dt><dd>${lead.proposed_slots.map(fmtDate).map(esc).join("<br>")}</dd>` : ""}
           </dl>
           <div class="actions">${actions.join("")}</div>
+        </div>
+        <div class="card"><h2>Research</h2>
+          ${lead.research_notes ? `
+            <pre style="white-space:pre-wrap;font:13px/1.5 inherit;margin:0">${esc(lead.research_notes)}</pre>
+            ${lead.research_sources ? `<div class="muted small" style="margin-top:8px">Sources:
+              ${lead.research_sources.map((s) => `<a href="${esc(s)}" target="_blank" rel="noopener">${esc(new URL(s).hostname)}</a>`).join(", ")}</div>` : ""}`
+          : lead.researched_at ? `<div class="muted small">Researched, but nothing citable was found.</div>`
+          : `<div class="muted small">Not yet researched. Julian researches automatically when you generate a sequence (if enabled in Settings).</div>`}
         </div>
         <div class="card"><h2>Sequence</h2>
           ${sequence.messages.length ? sequence.messages.map((m) => `
@@ -373,6 +385,9 @@ routes.settings = async () => {
               <textarea name="email_footer" placeholder='--\nAcme Inc, 1 Main St, Springfield.\nIf you&#39;d rather not hear from me, just reply "no thanks".'>${esc(ORG.email_footer || "")}</textarea></label>
             <label>Timezone (IANA name — sending hours &amp; meeting slots use this)
               <input name="timezone" value="${esc(ORG.timezone || "UTC")}" placeholder="Europe/London"></label>
+            <label><input type="checkbox" name="research_enabled" style="width:auto"
+              ${ORG.research_enabled ? "checked" : ""}>
+              Research each lead (company site + news) before writing</label>
             <label><input type="checkbox" name="auto_reply_enabled" style="width:auto"
               ${ORG.auto_reply_enabled ? "checked" : ""}>
               Let Julian auto-send knowledge-base answers (off = he drafts, you approve)</label>

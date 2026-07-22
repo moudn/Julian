@@ -42,6 +42,7 @@ class OrgSettingsIn(BaseModel):
     knowledge_base: str | None = Field(default=None, max_length=10000)
     timezone: str | None = Field(default=None, max_length=64)
     auto_reply_enabled: bool | None = None
+    research_enabled: bool | None = None
 
 
 class OrgOut(BaseModel):
@@ -54,6 +55,7 @@ class OrgOut(BaseModel):
     knowledge_base: str | None
     timezone: str
     auto_reply_enabled: bool
+    research_enabled: bool
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=201)
@@ -181,6 +183,7 @@ def me(org: Organization = Depends(get_current_org)):
         knowledge_base=org.knowledge_base,
         timezone=org.timezone,
         auto_reply_enabled=org.auto_reply_enabled,
+        research_enabled=org.research_enabled,
     )
 
 
@@ -211,6 +214,8 @@ def update_org_settings(
         org.timezone = request.timezone
     if request.auto_reply_enabled is not None:
         org.auto_reply_enabled = request.auto_reply_enabled
+    if request.research_enabled is not None:
+        org.research_enabled = request.research_enabled
     db.commit()
     db.refresh(org)
     return OrgOut(
@@ -221,4 +226,5 @@ def update_org_settings(
         knowledge_base=org.knowledge_base,
         timezone=org.timezone,
         auto_reply_enabled=org.auto_reply_enabled,
+        research_enabled=org.research_enabled,
     )

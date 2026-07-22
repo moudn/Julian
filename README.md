@@ -23,6 +23,17 @@ enforced by a state machine (`app/state_machine.py`); states cannot be
 skipped. `AWAITING_APPROVAL` may fall back to `MEETING_PROPOSED` when the
 sales rep rejects a booking.
 
+Before writing, Julian **researches each lead** (if enabled): it reads the
+company website and searches recent news, then the LLM distills citable
+factual bullets stored on the lead (`research_notes`). Those facts flow
+into every draft so the opener references something real. Runs
+automatically at sequence generation, or on demand via
+`POST /leads/{id}/research`. Website fetches are SSRF-guarded and all
+gathered web content is treated as untrusted (prompt-injection safe). The
+news step uses a Tavily key (`SEARCH_API_KEY`); without one, research falls
+back to the website alone. Toggle per org (`research_enabled`) or globally
+(`RESEARCH_ENABLED`).
+
 Outreach flow: `POST /leads/{id}/generate_sequence` (research-backed 4-step
 drafts) -> review -> `POST /leads/{id}/activate_sequence` (one approval,
 then autopilot). `POST /scheduler/run` triggers a send cycle manually; a
