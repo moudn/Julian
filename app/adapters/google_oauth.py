@@ -30,6 +30,10 @@ class GoogleOAuthError(Exception):
     pass
 
 
+class GoogleAccessRevoked(GoogleOAuthError):
+    """Refresh failed because the customer revoked or expired access."""
+
+
 STATE_TTL_MINUTES = 10
 
 
@@ -118,7 +122,11 @@ def refresh_access_token(refresh_token: str) -> dict:
 
 
 def get_valid_access_token(db: Session, credential: GoogleCredential) -> str:
-    """Return a live access token, refreshing and persisting it if expired."""
+    """Return a live access token, refreshing and persisting it if expired.
+
+    Raises GoogleAccessRevoked (and marks the credential broken) when Google
+    rejects the refresh token — the customer must reconnect.
+    """
     now = datetime.now(timezone.utc)
     expiry = credential.token_expiry
     if expiry is not None and expiry.tzinfo is None:
@@ -126,8 +134,22 @@ def get_valid_access_token(db: Session, credential: GoogleCredential) -> str:
     if credential.access_token and expiry and expiry > now + timedelta(minutes=2):
         return credential.access_token
 
-    tokens = refresh_access_token(credential.refresh_token)
+    try:
+        tokens = refresh_access_token(credential.refresh_token)
+    except GoogleOAuthError as exc:
+        # invalid_grant = refresh token revoked/expired; anything else 4xx
+        # on the token endpoint is also unrecoverable without reconnect.
+        if "invalid_grant" in str(exc) or "400" in str(exc) or "401" in str(exc):
+            credential.broken = True
+            credential.broken_reason = "Google access was revoked or expired"
+            db.commit()
+            raise GoogleAccessRevoked(str(exc)) from exc
+        raise
     credential.access_token = tokens["access_token"]
     credential.token_expiry = now + timedelta(seconds=int(tokens.get("expires_in", 3600)))
+    if credential.broken:
+        credential.broken = False
+        credential.broken_reason = None
+        credential.broken_notified = False
     db.commit()
     return credential.access_token

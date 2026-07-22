@@ -90,8 +90,9 @@ def test_send_cycle_appends_org_optout_footer(client, email_sender, monkeypatch)
     lead_id = _lead_with_sequence(client)
     client.post(f"/leads/{lead_id}/activate_sequence")
     client.post("/scheduler/run")
-    assert len(email_sender.sent) == 1
-    body = email_sender.sent[0]["body"].lower()
+    to_lead = [m for m in email_sender.sent if m["to"] == "ada@acme.io"]
+    assert len(to_lead) == 1
+    body = to_lead[0]["body"].lower()
     assert "no thanks" in body          # opt-out instruction
     assert "1 test street" in body      # postal address (CAN-SPAM)
 
@@ -106,7 +107,8 @@ def test_send_cycle_uses_custom_footer(client, email_sender, monkeypatch):
     lead_id = _lead_with_sequence(client)
     client.post(f"/leads/{lead_id}/activate_sequence")
     client.post("/scheduler/run")
-    assert "1 Main St" in email_sender.sent[0]["body"]
+    to_lead = [m for m in email_sender.sent if m["to"] == "ada@acme.io"]
+    assert "1 Main St" in to_lead[0]["body"]
 
 
 def test_sequence_stops_when_lead_leaves_active_state(client):

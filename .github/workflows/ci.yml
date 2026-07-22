@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.lock
+
+      - name: Run test suite
+        env:
+          SECRET_KEY: ci-test-secret
+          SCHEDULER_ENABLED: "false"
+          ENFORCE_SEND_WINDOW: "false"
+          RESEARCH_ENABLED: "false"
+        run: python -m pytest tests/ -q
+
+      - name: Verify migrations apply from scratch
+        env:
+          DATABASE_URL: sqlite:///./ci_migration_check.db
+        run: python -m alembic upgrade head

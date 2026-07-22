@@ -47,6 +47,7 @@ class MessageStatus(str, enum.Enum):
     APPROVED = "APPROVED"
     SENT = "SENT"
     SKIPPED = "SKIPPED"
+    FAILED = "FAILED"  # permanently undeliverable (bounce or retry cap)
 
 
 class MessageDirection(str, enum.Enum):
@@ -121,6 +122,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     password_hash: Mapped[str] = mapped_column(String(512))
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -157,6 +159,11 @@ class GoogleCredential(Base):
     )
     calendar_id: Mapped[str] = mapped_column(String(255), default="primary")
     account_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Set when Google refresh fails (access revoked/expired) so the agent
+    # stops hammering the API and the customer is told to reconnect.
+    broken: Mapped[bool] = mapped_column(Boolean, default=False)
+    broken_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    broken_notified: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -252,6 +259,10 @@ class OutreachMessage(Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # Retry accounting: a send that errors is retried until this cap, then
+    # marked FAILED so it can never loop forever.
+    send_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -43,6 +43,20 @@ class SendingError(Exception):
 RAMP_BASE_PER_DAY = 20
 SEND_WINDOW = (8, 18)  # local hours
 JITTER_MINUTES = 45
+MAX_SEND_ATTEMPTS = 4  # after this a message is marked FAILED, not retried
+
+# Substrings in a send error that mean the address is undeliverable — no
+# point retrying, and the address should be suppressed.
+HARD_BOUNCE_SIGNALS = (
+    "550", "551", "553", "invalid recipient", "recipient rejected",
+    "no such user", "user unknown", "mailbox unavailable",
+    "address rejected", "does not exist", "recipient not found",
+)
+
+
+def _is_hard_bounce(message: str) -> bool:
+    lowered = message.lower()
+    return any(signal in lowered for signal in HARD_BOUNCE_SIGNALS)
 
 
 def effective_daily_cap(org: Organization) -> int:
@@ -164,12 +178,22 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
     if not due:
         return {"sent": 0, "skipped": 0, "errors": []}
 
-    sender = sender or get_outbound_sender(db, org)
+    from app.adapters.google_oauth import GoogleAccessRevoked
+    from app.services.suppression import is_suppressed, suppress_email
+
+    try:
+        sender = sender or get_outbound_sender(db, org)
+    except GoogleAccessRevoked as exc:
+        # Connection is broken; skip this org entirely until they reconnect.
+        _notify_google_broken(db, org)
+        return {"sent": 0, "skipped": 0, "errors": [f"google revoked: {exc}"]}
     footer = org.email_footer if org.email_footer is not None else DEFAULT_FOOTER
 
+    failed = 0
     for message in due:
         lead = db.get(Lead, message.lead_id)
-        if lead is None or lead.state != LeadState.SEQUENCE_ACTIVE or not lead.email:
+        if (lead is None or lead.state != LeadState.SEQUENCE_ACTIVE
+                or not lead.email or is_suppressed(db, org.id, lead.email)):
             message.status = MessageStatus.SKIPPED
             skipped += 1
             continue
@@ -178,25 +202,81 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
         try:
             sender.send(to=lead.email, subject=message.subject,
                         body=message.body + (footer or ""))
+        except GoogleAccessRevoked as exc:
+            _notify_google_broken(db, org)
+            errors.append(f"google revoked mid-cycle: {exc}")
+            break
         except (GmailError, OSError) as exc:
-            # Leave the message APPROVED so the next cycle retries it
-            errors.append(f"message {message.id} (lead {lead.id}): {exc}")
-            logger.warning("send failed for message %s: %s", message.id, exc)
+            message.send_attempts += 1
+            message.last_error = str(exc)[:500]
+            if _is_hard_bounce(str(exc)):
+                # Undeliverable address: stop, mark failed, suppress it, and
+                # end the lead's sequence.
+                message.status = MessageStatus.FAILED
+                db.flush()  # persist FAILED before retiring the rest (autoflush off)
+                suppress_email(db, org.id, lead.email, "bounced")
+                _retire_and_stop(db, lead)
+                failed += 1
+                logger.info("hard bounce for lead %s (%s); suppressed",
+                            lead.id, lead.email)
+            elif message.send_attempts >= MAX_SEND_ATTEMPTS:
+                message.status = MessageStatus.FAILED
+                failed += 1
+                logger.warning("message %s failed after %d attempts: %s",
+                               message.id, message.send_attempts, exc)
+            else:
+                errors.append(f"message {message.id} (lead {lead.id}): {exc}")
+                logger.warning("send failed for message %s (attempt %d): %s",
+                               message.id, message.send_attempts, exc)
             continue
         message.status = MessageStatus.SENT
         message.sent_at = utcnow()
         sent += 1
 
     db.commit()
-    return {"sent": sent, "skipped": skipped, "errors": errors}
+    return {"sent": sent, "skipped": skipped, "failed": failed, "errors": errors}
+
+
+def _retire_and_stop(db: Session, lead: Lead) -> None:
+    """Bounce: stop the sequence and move the lead out of autopilot."""
+    pending = db.scalars(select(OutreachMessage).where(
+        OutreachMessage.lead_id == lead.id,
+        OutreachMessage.status.in_([MessageStatus.APPROVED, MessageStatus.DRAFT]),
+    )).all()
+    for step in pending:
+        step.status = MessageStatus.SKIPPED
+    if lead.state == LeadState.SEQUENCE_ACTIVE:
+        lead.state = LeadState.NOT_INTERESTED  # undeliverable == dead lead
+
+
+def _notify_google_broken(db: Session, org: Organization) -> None:
+    """Tell the rep their Google connection needs reconnecting (once)."""
+    credential = db.scalar(select(GoogleCredential).where(
+        GoogleCredential.org_id == org.id))
+    if credential is None or not credential.broken or credential.broken_notified:
+        return
+    credential.broken_notified = True
+    db.commit()
+    if not org.sales_rep_email:
+        return
+    EmailSenderAdapter().send(
+        to=org.sales_rep_email,
+        subject="Action needed: reconnect Google in Julian",
+        body=(f"Julian can no longer access your Google account "
+              f"({credential.account_email or 'connected account'}) — it "
+              "looks like access was revoked or expired. Outreach and "
+              "scheduling are paused for now.\n\n"
+              "Reconnect from Settings -> Connect Google to resume."),
+    )
 
 
 def run_send_cycle_all_orgs(db: Session) -> dict:
     """Background-loop entry point: process every organization."""
-    totals = {"sent": 0, "skipped": 0, "errors": []}
+    totals = {"sent": 0, "skipped": 0, "failed": 0, "errors": []}
     for org in db.scalars(select(Organization)).all():
         result = run_send_cycle(db, org)
         totals["sent"] += result["sent"]
         totals["skipped"] += result["skipped"]
+        totals["failed"] += result.get("failed", 0)
         totals["errors"].extend(result["errors"])
     return totals

@@ -90,3 +90,15 @@ def get_current_org(
     if org is None:
         raise HTTPException(status_code=401, detail="Organization not found")
     return org
+
+
+def require_verified_user(user: User = Depends(get_current_user)) -> User:
+    """Gate for actions that send email — the account's own email must be
+    confirmed first (blocks throwaway/spoofed signups from sending)."""
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Verify your email address before sending outreach. "
+                   "Check your inbox or call /auth/resend_verification.",
+        )
+    return user

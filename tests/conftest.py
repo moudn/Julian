@@ -21,8 +21,12 @@ from app.main import app  # noqa: E402
 
 
 def signup(client: TestClient, org_name="Acme Sales", email="owner@acme-sales.io",
-           rep_email="rep@example.com") -> str:
-    """Create an org + user, set the rep email, and return the API key."""
+           rep_email="rep@example.com", verify=True) -> str:
+    """Create an org + user, set the rep email, and return the API key.
+
+    By default the user's email is marked verified (most tests exercise the
+    happy path); pass verify=False to test the unverified gate.
+    """
     response = client.post("/auth/signup", json={
         "organization_name": org_name,
         "name": "Owner",
@@ -31,6 +35,16 @@ def signup(client: TestClient, org_name="Acme Sales", email="owner@acme-sales.io
     })
     assert response.status_code == 201, response.text
     api_key = response.json()["api_key"]
+    if verify:
+        from app.database import SessionLocal
+        from app.models import User
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter_by(email=email).one()
+            user.email_verified = True
+            db.commit()
+        finally:
+            db.close()
     response = client.patch(
         "/auth/org",
         json={

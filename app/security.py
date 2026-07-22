@@ -75,25 +75,40 @@ def rate_limit(request: Request, bucket: str, limit: int = 10,
 
 # ---------- password-reset tokens (signed, expiring, stateless) ----------
 
-def make_reset_token(user_id: int, ttl_seconds: int = 3600) -> str:
+def _make_token(user_id: int, purpose: str, ttl_seconds: int) -> str:
     expires = int(time.time()) + ttl_seconds
     payload = f"{user_id}.{expires}"
     signature = hmac.new(get_settings().secret_key.encode(),
-                         f"reset:{payload}".encode(), hashlib.sha256).hexdigest()
+                         f"{purpose}:{payload}".encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{signature}"
 
 
-def verify_reset_token(token: str) -> int | None:
-    """Return the user_id for a valid, unexpired token; None otherwise."""
+def _verify_token(token: str, purpose: str) -> int | None:
     try:
         user_part, expires_part, signature = token.split(".")
         payload = f"{user_part}.{expires_part}"
     except ValueError:
         return None
     expected = hmac.new(get_settings().secret_key.encode(),
-                        f"reset:{payload}".encode(), hashlib.sha256).hexdigest()
+                        f"{purpose}:{payload}".encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return None
     if int(expires_part) < time.time():
         return None
     return int(user_part)
+
+
+def make_reset_token(user_id: int, ttl_seconds: int = 3600) -> str:
+    return _make_token(user_id, "reset", ttl_seconds)
+
+
+def verify_reset_token(token: str) -> int | None:
+    return _verify_token(token, "reset")
+
+
+def make_verify_token(user_id: int, ttl_seconds: int = 86400) -> str:
+    return _make_token(user_id, "verify", ttl_seconds)
+
+
+def verify_email_token(token: str) -> int | None:
+    return _verify_token(token, "verify")

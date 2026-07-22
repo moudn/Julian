@@ -111,6 +111,12 @@ const ui = {
       window.open(result.checkout_url, "_blank");
     } catch (e) { oops(e); }
   },
+  async resendVerification() {
+    try {
+      await api("/auth/resend_verification", { method: "POST" });
+      toast("Verification email sent — check your inbox.");
+    } catch (e) { oops(e); }
+  },
 
   async uploadCsv(input) {
     if (!input.files.length) return;
@@ -426,7 +432,10 @@ routes.settings = async () => {
         <div class="card"><h2>Google (Calendar + Gmail)</h2>
           <p class="muted small">One connection lets Julian read your availability, send from
             your address, and see replies.</p>
-          ${google.connected
+          ${google.connected && google.broken
+            ? `<p>⚠️ Connection needs attention: ${esc(google.broken_reason || "access was revoked")}. Reconnect to resume sending.</p>
+               <button class="btn primary" onclick="ui.googleConnect()">Reconnect Google</button>`
+            : google.connected
             ? `<p>✅ Connected${google.account_email ? " as " + esc(google.account_email) : ""}</p>
                <button class="btn danger" onclick="ui.googleDisconnect()">Disconnect</button>`
             : `<p>⚠️ Not connected — Julian falls back to a simulated calendar and console email.</p>
@@ -463,6 +472,7 @@ async function boot() {
   $("#auth-view").classList.add("hidden");
   $("#app-view").classList.remove("hidden");
   showBanner(false);
+  $("#verify-banner").classList.toggle("hidden", ORG.email_verified !== false);
   try { await api("/leads"); } catch (e) { /* 402 shows banner */ }
   route();
 }

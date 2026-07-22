@@ -231,6 +231,28 @@ Sales-rep email and scoring threshold are per-organization settings
   imports capped at 2 MB / 5,000 rows; lead listing is paginated with
   `GET /leads/stats` for dashboard counts
 
+## Reliability & operations
+
+- **Bounce handling**: a hard bounce (550 / "no such user" / rejected) marks
+  the message FAILED, suppresses the address, and ends the lead's sequence —
+  no reputation-damaging retries. Transient send errors retry up to
+  `MAX_SEND_ATTEMPTS` (4), then FAIL rather than loop forever.
+- **Google revocation**: if a customer revokes access, the token refresh
+  marks the connection `broken`, pauses that org's send/reply cycles, and
+  emails the rep to reconnect (once). Status is exposed at
+  `GET /integrations/google/status` and shown in the dashboard.
+- **Email verification**: signup sends a verification email; unverified
+  accounts can configure everything but cannot activate outreach (blocks
+  throwaway/spoofed senders). `/auth/verify_email`,
+  `/auth/resend_verification`.
+- **Health checks**: `/health` (liveness, always cheap) and `/health/ready`
+  (readiness — pings the database, 503 if down). Point your uptime monitor
+  at `/health/ready`.
+- **Error tracking**: set `SENTRY_DSN` to enable Sentry (optional).
+- **CI**: `.github/workflows/ci.yml` runs the full suite and a migration
+  check on every PR. Production/Docker installs the pinned
+  `requirements.lock`; `requirements.txt` keeps loose bounds for local dev.
+
 ## Database migrations
 
 Schema is managed with Alembic (`migrations/`). For a new database:

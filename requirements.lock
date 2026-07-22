@@ -1,0 +1,21 @@
+# Pinned, reproducible dependency set for CI and production Docker builds.
+# Regenerate after changing requirements.txt:
+#   pip install -r requirements.txt && pip freeze > requirements.lock
+# (then trim to the direct deps below plus anything you intend to pin).
+#
+# requirements.txt keeps loose lower bounds for local development; this file
+# is the exact set that gets deployed.
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+sqlalchemy==2.0.51
+pydantic==2.13.4
+pydantic-settings==2.14.2
+httpx==0.28.1
+python-multipart==0.0.32
+email-validator==2.3.0
+cryptography==49.0.0
+alembic==1.18.5
+psycopg[binary]==3.2.3
+pytest==9.1.1
+# Optional error tracking; enabled only when SENTRY_DSN is set.
+sentry-sdk[fastapi]==2.18.0

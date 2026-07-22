@@ -15,6 +15,7 @@ router = APIRouter(prefix="/scheduler", tags=["scheduler"],
 class SendCycleOut(BaseModel):
     sent: int
     skipped: int
+    failed: int = 0
     errors: list[str]
 
 

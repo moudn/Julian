@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.adapters.llm import LLMError, OpenRouterAdapter
-from app.auth import get_current_org
+from app.auth import get_current_org, require_verified_user
 from app.database import get_db
 from app.deps import get_llm_adapter, get_researcher
 from app.models import Lead, LeadState, Organization, OutreachMessage
@@ -237,6 +237,7 @@ def activate_outreach_sequence(
     lead_id: int,
     db: Session = Depends(get_db),
     org: Organization = Depends(get_current_org),
+    _verified=Depends(require_verified_user),
 ):
     """The customer's one approval: arm the whole sequence for autopilot.
 

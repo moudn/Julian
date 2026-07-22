@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     billing_success_url: str = "http://localhost:8000/billing/success"
     billing_cancel_url: str = "http://localhost:8000/billing/cancelled"
 
+    # Error tracking (optional). Set a Sentry DSN to enable.
+    sentry_dsn: str = ""
+    environment: str = "development"
+
     # SMTP — if smtp_host is empty, emails are logged instead of sent
     smtp_host: str = ""
     smtp_port: int = 587

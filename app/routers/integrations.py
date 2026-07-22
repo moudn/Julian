@@ -30,6 +30,8 @@ class StatusOut(BaseModel):
     connected: bool
     account_email: str | None = None
     calendar_id: str | None = None
+    broken: bool = False
+    broken_reason: str | None = None
 
 
 @router.get("/connect", response_model=ConnectOut)
@@ -106,7 +108,8 @@ def status(org: Organization = Depends(get_current_org), db: Session = Depends(g
     if credential is None:
         return StatusOut(connected=False)
     return StatusOut(connected=True, account_email=credential.account_email,
-                     calendar_id=credential.calendar_id)
+                     calendar_id=credential.calendar_id,
+                     broken=credential.broken, broken_reason=credential.broken_reason)
 
 
 @router.delete("", status_code=204)
