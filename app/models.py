@@ -70,6 +70,9 @@ class Organization(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
+    # Human name Julian signs outreach with (the rep the lead should think
+    # they're talking to). Defaults to the signup user's name.
+    sender_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Where booking-approval notifications go for this tenant
     sales_rep_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     score_threshold: Mapped[float] = mapped_column(Float, default=50.0)
@@ -89,6 +92,9 @@ class Organization(Base):
     # When False (default), Julian never auto-sends knowledge-base answers —
     # they're delivered to the rep as suggested replies instead.
     auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # When True, Julian researches each lead (company site + news) before
+    # writing and cites what it finds.
+    research_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)
@@ -184,6 +190,12 @@ class Lead(Base):
     outreach_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
     # ISO-8601 datetimes offered to the lead while in MEETING_PROPOSED
     proposed_slots: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Researched, LLM-distilled factual insights (company site + news) that
+    # Julian may cite when writing; research_sources lists the URLs used.
+    research_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    research_sources: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    researched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

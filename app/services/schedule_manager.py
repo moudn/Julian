@@ -39,6 +39,11 @@ class ScheduleManager:
         local = moment.astimezone(zone)
         return f"{local.strftime('%A %B %d, %H:%M')} {local.tzname() or self.org.timezone}"
 
+    @property
+    def _signer(self) -> str:
+        name = (self.org.sender_name or "").strip()
+        return name or f"The {self.org.name} team"
+
     def propose_meeting(self, db: Session, lead: Lead,
                         duration_minutes: int = 30, slot_count: int = 3) -> list[datetime]:
         """Find free slots on the rep's calendar and offer them to the lead."""
@@ -71,7 +76,7 @@ class ScheduleManager:
                     f"Hi {lead.name.split()[0]},\n\n"
                     f"Here are a few times that work on our side:\n\n{slot_lines}\n\n"
                     "Reply with the option that suits you and we'll get it confirmed.\n\n"
-                    "Best regards"
+                    f"{self._signer}"
                 ),
             )
         return [start for start, _ in slots]
@@ -176,7 +181,8 @@ class ScheduleManager:
                     f"Hi {lead.name.split()[0]},\n\n"
                     f"Your call is confirmed for "
                     f"{self._fmt(booking.slot_start)}. "
-                    "A calendar invitation is on its way.\n\nSee you then!"
+                    "A calendar invitation is on its way.\n\n"
+                    f"See you then,\n{self._signer}"
                 ),
             )
         return booking

@@ -25,6 +25,9 @@ class LeadOut(BaseModel):
     score: float | None
     outreach_draft: str | None
     proposed_slots: list[str] | None
+    research_notes: str | None
+    research_sources: list[str] | None
+    researched_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

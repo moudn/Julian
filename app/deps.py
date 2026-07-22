@@ -61,3 +61,8 @@ def get_email_sender() -> EmailSenderAdapter:
 @lru_cache
 def get_llm_adapter() -> OpenRouterAdapter:
     return OpenRouterAdapter()
+
+
+def get_researcher() -> "LeadResearcher":
+    from app.adapters.research import LeadResearcher
+    return LeadResearcher(llm=get_llm_adapter())
