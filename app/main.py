@@ -25,6 +25,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _init_sentry():
+    """Enable error tracking if a DSN is configured (optional dependency)."""
+    dsn = get_settings().sentry_dsn
+    if not dsn:
+        return
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=dsn, environment=get_settings().environment,
+                        traces_sample_rate=0.0)
+        logger.info("Sentry error tracking enabled")
+    except ImportError:
+        logger.warning("SENTRY_DSN set but sentry-sdk not installed; skipping")
+
+
 def _run_agent_cycle() -> dict:
     """One full autopilot pass: triage new replies first, then send due steps."""
     from app.services.replies import run_reply_cycle_all_orgs
@@ -53,6 +67,7 @@ async def _agent_loop(interval_seconds: int):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _init_sentry()
     init_db()
     settings = get_settings()
     task = None
@@ -109,7 +124,27 @@ async def security_headers(request, call_next):
 
 @app.get("/health")
 def health():
+    """Liveness only — always cheap, no dependencies."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def readiness():
+    """Readiness — checks the database is reachable. 503 if not."""
+    from sqlalchemy import text
+
+    from fastapi import HTTPException
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.error("readiness check failed: %s", exc)
+        raise HTTPException(status_code=503, detail="database unavailable") from exc
+    finally:
+        db.close()
+    return {"status": "ready"}
 
 
 # Dashboard SPA (no build step; talks to the JSON API above)

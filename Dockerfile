@@ -5,8 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv/julian
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the pinned, reproducible set (not the loose requirements.txt)
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .
 

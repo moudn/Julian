@@ -10,7 +10,13 @@ from app.config import get_settings
 from app.database import get_db
 from app.deps import get_email_sender
 from app.models import ApiKey, Organization, User
-from app.security import make_reset_token, rate_limit, verify_reset_token
+from app.security import (
+    make_reset_token,
+    make_verify_token,
+    rate_limit,
+    verify_email_token,
+    verify_reset_token,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -58,12 +64,18 @@ class OrgOut(BaseModel):
     timezone: str
     auto_reply_enabled: bool
     research_enabled: bool
+    email_verified: bool = True
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=201)
 def signup(request: SignupRequest, http_request: Request,
-           db: Session = Depends(get_db)):
-    """Create a new organization with its first user; returns an API key."""
+           db: Session = Depends(get_db),
+           email_sender=Depends(get_email_sender)):
+    """Create a new organization with its first user; returns an API key.
+
+    A verification email is sent; unverified accounts can sign in and
+    configure settings but cannot activate outreach (see require_verified).
+    """
     rate_limit(http_request, "signup", limit=5, window_seconds=60)
     if db.scalar(select(User).where(User.email == request.email)):
         raise HTTPException(status_code=409, detail="A user with this email already exists")
@@ -86,9 +98,49 @@ def signup(request: SignupRequest, http_request: Request,
     db.commit()
     db.refresh(user)
 
+    _send_verification_email(email_sender, user)
+
     return AuthResponse(
         api_key=generate_api_key(db, user), organization_id=org.id, user_id=user.id
     )
+
+
+def _send_verification_email(email_sender, user: User) -> None:
+    token = make_verify_token(user.id)
+    email_sender.send(
+        to=user.email,
+        subject="Confirm your email for Julian",
+        body=(f"Hi {user.name},\n\nWelcome to Julian. Confirm your email so "
+              f"you can start sending outreach:\n\n{token}\n\n"
+              "Paste it into the dashboard's verification prompt, or POST it "
+              "to /auth/verify_email. The link is valid for 24 hours."),
+    )
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+@router.post("/verify_email")
+def verify_email(request: VerifyEmailRequest, db: Session = Depends(get_db)):
+    user_id = verify_email_token(request.token)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    user.email_verified = True
+    db.commit()
+    return {"status": "ok", "message": "Email verified."}
+
+
+@router.post("/resend_verification")
+def resend_verification(user: User = Depends(get_current_user),
+                        email_sender=Depends(get_email_sender)):
+    if user.email_verified:
+        return {"status": "ok", "message": "Already verified."}
+    _send_verification_email(email_sender, user)
+    return {"status": "ok", "message": "Verification email sent."}
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -177,7 +229,8 @@ def revoke_key(key_id: int, user: User = Depends(get_current_user),
 
 
 @router.get("/me", response_model=OrgOut)
-def me(org: Organization = Depends(get_current_org)):
+def me(org: Organization = Depends(get_current_org),
+       user: User = Depends(get_current_user)):
     return OrgOut(
         id=org.id, name=org.name, sender_name=org.sender_name,
         sales_rep_email=org.sales_rep_email,
@@ -188,6 +241,7 @@ def me(org: Organization = Depends(get_current_org)):
         timezone=org.timezone,
         auto_reply_enabled=org.auto_reply_enabled,
         research_enabled=org.research_enabled,
+        email_verified=user.email_verified,
     )
 
 

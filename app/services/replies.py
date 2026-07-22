@@ -412,18 +412,23 @@ def poll_replies(db: Session, org: Organization, reader: GmailReaderAdapter,
 
 def run_reply_cycle_all_orgs(db: Session) -> dict:
     """Background-loop entry point: poll Gmail for every connected org."""
-    from app.adapters.google_oauth import get_valid_access_token
+    from app.adapters.google_oauth import GoogleAccessRevoked, get_valid_access_token
 
     totals = {"processed": 0, "duplicates": 0, "errors": []}
     orgs = db.scalars(select(Organization)).all()
     for org in orgs:
         credential = db.scalar(select(GoogleCredential).where(
             GoogleCredential.org_id == org.id))
-        if credential is None:
+        if credential is None or credential.broken:
             continue
         reader = GmailReaderAdapter(
             token_provider=lambda c=credential: get_valid_access_token(db, c))
-        result = poll_replies(db, org, reader)
+        try:
+            result = poll_replies(db, org, reader)
+        except GoogleAccessRevoked:
+            from app.services.sending import _notify_google_broken
+            _notify_google_broken(db, org)
+            continue
         totals["processed"] += result["processed"]
         totals["duplicates"] += result["duplicates"]
         totals["errors"].extend(result["errors"])
