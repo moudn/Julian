@@ -231,7 +231,7 @@ class OpenRouterAdapter:
             return {"category": "OUT_OF_OFFICE", "suggested_reply": "", "answer": ""}
 
         if not self.api_key:
-            return self._heuristic_classify(lead, lowered)
+            return self._heuristic_classify(lead, org, lowered)
 
         context = "\n\n".join(filter(None, [
             f"Prospect: {lead.name}"
@@ -266,7 +266,7 @@ class OpenRouterAdapter:
             return {"category": "COMPLEX", "suggested_reply": "", "answer": ""}
         return data
 
-    def _heuristic_classify(self, lead: Lead, lowered: str) -> dict:
+    def _heuristic_classify(self, lead: Lead, org: Organization, lowered: str) -> dict:
         first = lead.name.split()[0]
         if any(p in lowered for p in NOT_INTERESTED_PHRASES):
             return {"category": "NOT_INTERESTED", "suggested_reply": "", "answer": ""}
@@ -275,7 +275,8 @@ class OpenRouterAdapter:
                 "category": "INTERESTED",
                 "suggested_reply": (
                     f"Hi {first},\n\nGreat to hear — happy to find a time. "
-                    f"I'll send over a few slots that work on our side.\n\nBest"
+                    f"I'll send over a few slots that work on our side.\n\n"
+                    f"{_signer_name(org)}"
                 ),
                 "answer": "",
             }
@@ -285,8 +286,10 @@ class OpenRouterAdapter:
 
     def _generate_via_api(self, lead: Lead, org: Organization, step: int,
                           prior_bodies: list[str], correction: str = "") -> dict:
+        signer = _signer_name(org)
         sender_line = (
-            f"Sender: a sales rep at {org.name}."
+            f"Sender: {signer}, a sales rep at {org.name}. "
+            f"Sign the email with the first name of \"{signer}\" only."
             + (f" What they sell: {org.product_description}" if org.product_description
                else " (No product description configured — keep the offering "
                     "generic but concrete.)")
@@ -391,53 +394,63 @@ def _parse_draft(content: str) -> dict:
     raise LLMError("LLM response was not valid draft JSON")
 
 
+def _signer_name(org: Organization) -> str:
+    """Name to sign outreach with; falls back to a team signature."""
+    name = (getattr(org, "sender_name", None) or "").strip()
+    return name or f"The {org.name} team"
+
+
 def _template_step(lead: Lead, org: Organization, step: int) -> dict:
-    """Deterministic no-API-key fallback following the same frameworks."""
-    first = lead.name.split()[0]
-    role = lead.title or "your role"
+    """Deterministic no-API-key fallback. Product-neutral: it leans on the
+    org's product description rather than assuming any particular pain."""
+    first = lead.name.split()[0] if lead.name else "there"
     company = lead.company or "your team"
     offering = org.product_description or "what we're building"
+    signer = _signer_name(org)
 
     if step == 1:
         return {
-            "subject": f"Manual outreach at {company}",
+            "subject": f"A quick idea for {company}"[:50],
             "body": (
                 f"Hi {first},\n\n"
-                f"Most people in {role} tell us outreach and follow-up eat "
-                f"hours every week that should go to closing. Left alone, it "
-                f"only compounds as the pipeline grows.\n\n"
-                f"That's the problem we work on: {offering}.\n\n"
-                f"Is this on your radar this quarter?\n\nJulian"
+                f"I'll keep this short. We help teams like {company} with "
+                f"{offering}.\n\n"
+                f"If taking the manual, repetitive parts of that off your "
+                f"plate is a priority right now, it might be worth a quick "
+                f"chat.\n\n"
+                f"Worth a look?\n\n{signer}"
             ),
         }
     if step == 2:
         return {
-            "subject": f"One thought for {company}",
+            "subject": f"Following up, {first}"[:50],
             "body": (
                 f"Hi {first},\n\n"
-                f"Following up on my last note. Teams like {company} usually "
-                f"see the tedious parts of outreach drop dramatically once "
-                f"it's automated with a human check on the important bits.\n\n"
-                f"Worth a quick chat?\n\nJulian"
+                f"Circling back on my last note. Teams like {company} usually "
+                f"see the tedious, repetitive work shrink noticeably once "
+                f"we're in place — with a human keeping control of the calls "
+                f"that matter.\n\n"
+                f"Open to a quick chat?\n\n{signer}"
             ),
         }
     if step == 3:
         return {
-            "subject": "A benchmark you might find useful",
+            "subject": "One thing worth sharing",
             "body": (
                 f"Hi {first},\n\n"
-                f"No ask here — just sharing what we see across teams like "
-                f"{company}: the first follow-up captures a large share of "
-                f"replies most teams never collect because nobody sends it.\n\n"
-                f"Happy to share more anytime.\n\nJulian"
+                f"No ask here — just a thought. The teams that get the most "
+                f"out of what we do treat the busywork as a system to fix, "
+                f"not a cost of doing business. Happy to share how a few "
+                f"companies like {company} approached it.\n\n"
+                f"Either way, wishing you well.\n\n{signer}"
             ),
         }
     return {
         "subject": "Closing the loop",
         "body": (
             f"Hi {first},\n\n"
-            f"Sounds like the timing isn't right, so I'll stop here. If "
-            f"outreach ever becomes a priority at {company}, my door's "
-            f"open.\n\nAll the best,\nJulian"
+            f"Sounds like the timing isn't right, so I'll stop here. If this "
+            f"ever becomes a priority at {company}, I'm one reply away.\n\n"
+            f"All the best,\n{signer}"
         ),
     }

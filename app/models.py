@@ -70,6 +70,9 @@ class Organization(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
+    # Human name Julian signs outreach with (the rep the lead should think
+    # they're talking to). Defaults to the signup user's name.
+    sender_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Where booking-approval notifications go for this tenant
     sales_rep_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     score_threshold: Mapped[float] = mapped_column(Float, default=50.0)

@@ -372,6 +372,8 @@ routes.settings = async () => {
       <div>
         <div class="card"><h2>Julian's briefing</h2>
           <form onsubmit="return ui.saveSettings(event)">
+            <label>Sender name (the name Julian signs every email with)
+              <input name="sender_name" value="${esc(ORG.sender_name || "")}" placeholder="Alex Rivera"></label>
             <label>Sales rep email (approvals go here)
               <input type="email" name="sales_rep_email" value="${esc(ORG.sales_rep_email || "")}"></label>
             <label>Score threshold

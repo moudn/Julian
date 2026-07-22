@@ -321,7 +321,8 @@ def _handle_slot_selection(db: Session, lead: Lead, org: Organization, body: str
         ack = (f"Hi {lead.name.split()[0]},\n\n"
                f"Perfect — I've pencilled in "
                f"{manager._fmt(chosen)}. You'll receive a "
-               f"calendar invitation shortly.\n\nSpeak soon")
+               f"calendar invitation shortly.\n\nSpeak soon,\n"
+               f"{(org.sender_name or '').strip() or ('The ' + org.name + ' team')}")
         sender.send(to=lead.email, subject="Re: " + (subject or "our call"), body=ack)
         db.add(ConversationMessage(
             org_id=org.id, lead_id=lead.id,

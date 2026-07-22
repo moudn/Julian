@@ -35,6 +35,7 @@ class AuthResponse(BaseModel):
 
 
 class OrgSettingsIn(BaseModel):
+    sender_name: str | None = Field(default=None, max_length=255)
     sales_rep_email: EmailStr | None = None
     score_threshold: float | None = None
     product_description: str | None = Field(default=None, max_length=2000)
@@ -48,6 +49,7 @@ class OrgSettingsIn(BaseModel):
 class OrgOut(BaseModel):
     id: int
     name: str
+    sender_name: str | None
     sales_rep_email: str | None
     score_threshold: float
     product_description: str | None
@@ -68,6 +70,7 @@ def signup(request: SignupRequest, http_request: Request,
 
     org = Organization(
         name=request.organization_name,
+        sender_name=request.name,
         sales_rep_email=request.email,
         score_threshold=get_settings().score_threshold,
     )
@@ -176,7 +179,8 @@ def revoke_key(key_id: int, user: User = Depends(get_current_user),
 @router.get("/me", response_model=OrgOut)
 def me(org: Organization = Depends(get_current_org)):
     return OrgOut(
-        id=org.id, name=org.name, sales_rep_email=org.sales_rep_email,
+        id=org.id, name=org.name, sender_name=org.sender_name,
+        sales_rep_email=org.sales_rep_email,
         score_threshold=org.score_threshold,
         product_description=org.product_description,
         email_footer=org.email_footer,
@@ -194,6 +198,8 @@ def update_org_settings(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if request.sender_name is not None:
+        org.sender_name = request.sender_name
     if request.sales_rep_email is not None:
         org.sales_rep_email = request.sales_rep_email
     if request.score_threshold is not None:
@@ -219,7 +225,8 @@ def update_org_settings(
     db.commit()
     db.refresh(org)
     return OrgOut(
-        id=org.id, name=org.name, sales_rep_email=org.sales_rep_email,
+        id=org.id, name=org.name, sender_name=org.sender_name,
+        sales_rep_email=org.sales_rep_email,
         score_threshold=org.score_threshold,
         product_description=org.product_description,
         email_footer=org.email_footer,
