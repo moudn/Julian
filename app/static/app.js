@@ -346,6 +346,82 @@ async function leadDetail(id) {
     </div>`;
 }
 
+routes.analytics = async () => {
+  const a = await api("/analytics");
+  const f = a.funnel;
+  const kpi = (n, label, suffix = "") =>
+    `<div class="kpi"><div class="num">${n}${suffix}</div><div class="lbl">${label}</div></div>`;
+
+  // per-step and per-variant bars scale to the largest reply_rate present
+  const maxStepRate = Math.max(1, ...a.per_step.map((s) => s.reply_rate));
+  const stepRows = a.per_step.map((s) => `
+    <tr><td>Step ${s.step}</td><td>${s.sent}</td><td>${s.replies}</td>
+      <td style="min-width:160px">
+        <div style="background:var(--surface);border-radius:5px;overflow:hidden">
+          <div style="width:${(s.reply_rate / maxStepRate) * 100}%;background:var(--s-blue);
+            height:16px;border-radius:5px"></div></div></td>
+      <td>${s.reply_rate}%</td></tr>`).join("");
+
+  const variantRows = a.per_variant.map((v) => `
+    <tr><td>${esc(v.variant)}</td><td>${v.contacted}</td><td>${v.replied}</td>
+      <td>${v.reply_rate}%</td></tr>`).join("");
+
+  // weekly trend: paired sent/reply bars
+  const maxWeek = Math.max(1, ...a.weekly.map((w) => w.sent));
+  const weekBars = a.weekly.map((w) => `
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+      <div style="display:flex;align-items:flex-end;gap:2px;height:90px">
+        <div title="${w.sent} sent" style="width:9px;background:var(--s-violet);
+          height:${(w.sent / maxWeek) * 100}%;min-height:2px;border-radius:3px 3px 0 0"></div>
+        <div title="${w.replies} replies" style="width:9px;background:var(--s-green);
+          height:${(w.replies / maxWeek) * 100}%;min-height:2px;border-radius:3px 3px 0 0"></div>
+      </div>
+      <div class="muted" style="font-size:10px">${w.week.slice(5)}</div>
+    </div>`).join("");
+
+  $("#page").innerHTML = `
+    <div class="page-head"><div><h1>Analytics</h1>
+      <span class="muted">How your outreach is landing. Reply rate is
+      replies ÷ leads contacted.</span></div></div>
+    ${f.contacted === 0 ? `<div class="card"><div class="empty">
+      No sent outreach yet — activate a sequence and check back once Julian
+      has emailed some leads.</div></div>` : `
+    <div class="grid kpis">
+      ${kpi(f.contacted, "Leads contacted")}
+      ${kpi(f.reply_rate, "Reply rate", "%")}
+      ${kpi(f.interested, "Interested replies")}
+      ${kpi(f.meetings_booked, "Meetings booked")}
+      ${kpi(f.meeting_rate, "Contacted → meeting", "%")}
+    </div>
+    <div class="cols">
+      <div class="card"><h2>Which touch earns replies</h2>
+        <table>
+          <tr><th>Step</th><th>Sent</th><th>Replies</th><th>Reply rate</th><th></th></tr>
+          ${stepRows || `<tr><td colspan="5" class="muted">No sends yet.</td></tr>`}
+        </table>
+        <p class="muted small" style="margin-top:10px">Replies are attributed
+          to the most recent touch when the lead responded — showing which
+          message in the sequence is doing the work.</p>
+      </div>
+      <div>
+        <div class="card"><h2>By template</h2>
+          <table>
+            <tr><th>Template</th><th>Contacted</th><th>Replied</th><th>Reply rate</th></tr>
+            ${variantRows || `<tr><td colspan="4" class="muted">No data.</td></tr>`}
+          </table>
+          <p class="muted small" style="margin-top:10px">One template today.
+            When you A/B test new methods, each appears here to compare.</p>
+        </div>
+        <div class="card"><h2>Last 8 weeks</h2>
+          <div style="display:flex;gap:4px;align-items:flex-end">${weekBars}</div>
+          <div class="muted small" style="margin-top:8px">
+            <span style="color:var(--s-violet)">■</span> sent
+            &nbsp; <span style="color:var(--s-green)">■</span> replies</div>
+        </div>
+      </div>
+    </div>`}`;
+};
+
 routes.approvals = async () => {
   const bookings = await api("/bookings/pending");
   const leads = await api("/leads");

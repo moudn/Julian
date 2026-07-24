@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.database import SessionLocal, init_db
 from app.routers import (
+    analytics,
     apollo,
     auth,
     billing,
@@ -112,6 +113,7 @@ app.include_router(apollo.router)
 app.include_router(bookings.router)
 app.include_router(replies.router)
 app.include_router(scheduler.router)
+app.include_router(analytics.router)
 
 
 @app.middleware("http")
