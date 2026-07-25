@@ -16,10 +16,11 @@ if config.config_file_name is not None:
 
 # Wire Alembic to the app's models and configured database
 from app.config import get_settings  # noqa: E402
-from app.database import Base  # noqa: E402
+from app.database import Base, normalize_db_url  # noqa: E402
 from app import models  # noqa: E402,F401
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option("sqlalchemy.url",
+                       normalize_db_url(get_settings().database_url))
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,

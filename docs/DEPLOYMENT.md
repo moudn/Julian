@@ -27,6 +27,32 @@ Fly.io — with managed Postgres. Expect ~$5–20/month to start.
 
 Never commit any of these. Set them in the platform's dashboard.
 
+## 2b. Using Supabase for the database
+
+Supabase is managed Postgres — the app talks to it like any other Postgres,
+no Supabase client library needed.
+
+1. Create a project at supabase.com (free tier is fine to start). Save the
+   database password it generates.
+2. Project Settings → Database → **Connection string** → choose the
+   **Session pooler** (port 5432, IPv4-friendly and safe for long-lived
+   connections; avoid the transaction pooler, which breaks prepared
+   statements).
+3. Paste it into `DATABASE_URL`. Supabase hands out a `postgres://...` URL;
+   the app **normalizes that automatically** to the psycopg driver, so you
+   can paste it verbatim. Replace `[YOUR-PASSWORD]` with the real password.
+4. Deploy — `start.sh` runs `alembic upgrade head` on boot and creates every
+   table. Do **not** create tables by hand in the Supabase UI; migrations own
+   the schema.
+
+Notes:
+- The app sets `pool_pre_ping` and a 30-minute connection recycle, so
+  Supabase dropping idle connections is handled.
+- Supabase's Row Level Security is not used: Julian connects as the owner
+  role and enforces per-tenant isolation in the application layer (every
+  query is scoped by `org_id`, covered by tests).
+- Turn on Point-in-Time Recovery / daily backups in the Supabase dashboard.
+
 ## 3. Platform setup (Railway example; Render/Fly are near-identical)
 
 1. Create a project → "Deploy from GitHub repo" → select the Julian repo.

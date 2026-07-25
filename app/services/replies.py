@@ -16,7 +16,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.adapters.calendar import CalendarError
@@ -125,6 +125,16 @@ def extract_slot_choice(body: str, proposed_slots: list[str] | None) -> datetime
     return None
 
 
+def _last_sent_step(db: Session, lead: Lead) -> int | None:
+    """The highest step number already emailed to this lead — used to
+    attribute an inbound reply to the touch that earned it."""
+    return db.scalar(
+        select(func.max(OutreachMessage.step)).where(
+            OutreachMessage.lead_id == lead.id,
+            OutreachMessage.status == MessageStatus.SENT)
+    )
+
+
 def _thread_bodies(db: Session, lead: Lead, limit: int = 6) -> list[str]:
     messages = db.scalars(
         select(ConversationMessage)
@@ -176,6 +186,7 @@ def ingest_reply(
         body=body,
         gmail_message_id=gmail_message_id,
         category=category.value,
+        replied_after_step=_last_sent_step(db, lead),
         suggested_reply=result.get("suggested_reply") or None,
     )
     db.add(inbound)
@@ -303,6 +314,7 @@ def _handle_slot_selection(db: Session, lead: Lead, org: Organization, body: str
         subject=subject, body=body,
         gmail_message_id=gmail_message_id,
         category="SLOT_SELECTED",
+        replied_after_step=_last_sent_step(db, lead),
     ))
     manager = ScheduleManager(
         calendar=get_org_calendar(db, org), email_sender=notifier, org=org)

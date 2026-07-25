@@ -249,6 +249,9 @@ class OutreachMessage(Base):
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
     step: Mapped[int] = mapped_column(Integer)
     send_after_days: Mapped[int] = mapped_column(Integer, default=0)
+    # Which template/framework produced this message. One variant today
+    # ("v1"); the analytics group by it so A/B variants compare cleanly.
+    variant: Mapped[str] = mapped_column(String(32), default="v1")
     subject: Mapped[str] = mapped_column(String(255))
     body: Mapped[str] = mapped_column(Text)
     status: Mapped[MessageStatus] = mapped_column(
@@ -322,6 +325,9 @@ class ConversationMessage(Base):
     # For inbound messages: how Julian triaged it, and what he suggested
     category: Mapped[str | None] = mapped_column(String(32), nullable=True)
     suggested_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Step number of the most recent sent outreach when this reply arrived,
+    # so analytics can attribute replies to the touch that earned them.
+    replied_after_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
