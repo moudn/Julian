@@ -14,7 +14,11 @@ async function api(path, options = {}) {
     options.body = JSON.stringify(options.json);
   }
   const response = await fetch(API + path, { ...options, headers });
-  if (response.status === 401) { ui.logout(); throw new Error("Signed out"); }
+  // Only force a logout on 401 if we actually had a session to invalidate
+  // (a stored key that got revoked/expired). Without one — e.g. a failed
+  // login/signup attempt — fall through so the real error (e.g. "Invalid
+  // email or password") reaches the caller instead of a generic message.
+  if (response.status === 401 && key) { ui.logout(); throw new Error("Signed out"); }
   if (response.status === 402) { showBanner(true); }
   if (!response.ok) {
     let detail = response.statusText;
