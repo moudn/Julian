@@ -10,6 +10,18 @@ os.environ.setdefault("ENFORCE_SEND_WINDOW", "false")
 # Research makes outbound HTTP; off by default so tests never hit the network.
 # Research-specific tests re-enable it with a mocked researcher.
 os.environ.setdefault("RESEARCH_ENABLED", "false")
+# Force every external-service credential off for the test session,
+# regardless of what a developer's local .env holds. Without this, a real
+# SMTP_HOST/OPENROUTER_API_KEY/etc in .env causes tests to make real network
+# calls (real emails, real LLM requests) instead of using the safe
+# console/template fallbacks — this has bitten real local runs before.
+os.environ["SMTP_HOST"] = ""
+os.environ["OPENROUTER_API_KEY"] = ""
+os.environ["SEARCH_API_KEY"] = ""
+os.environ["APOLLO_API_KEY"] = ""
+os.environ["STRIPE_SECRET_KEY"] = ""
+os.environ["GOOGLE_CLIENT_ID"] = ""
+os.environ["GOOGLE_CLIENT_SECRET"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 
