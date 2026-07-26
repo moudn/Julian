@@ -29,6 +29,13 @@ async function api(path, options = {}) {
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// esc() blocks HTML injection but not a javascript: scheme in an href — only
+// ever render a URL as a link after this passes (data comes from research
+// sources: the fetched site's own URL and third-party search results).
+const safeHref = (url) => {
+  try { return ["http:", "https:"].includes(new URL(url).protocol) ? url : "#"; }
+  catch (e) { return "#"; }
+};
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleString(undefined,
   { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 
@@ -307,7 +314,7 @@ async function leadDetail(id) {
           ${lead.research_notes ? `
             <pre style="white-space:pre-wrap;font:13px/1.5 inherit;margin:0">${esc(lead.research_notes)}</pre>
             ${lead.research_sources ? `<div class="muted small" style="margin-top:8px">Sources:
-              ${lead.research_sources.map((s) => `<a href="${esc(s)}" target="_blank" rel="noopener">${esc(new URL(s).hostname)}</a>`).join(", ")}</div>` : ""}`
+              ${lead.research_sources.map((s) => `<a href="${esc(safeHref(s))}" target="_blank" rel="noopener">${esc(safeHref(s) === "#" ? s : new URL(s).hostname)}</a>`).join(", ")}</div>` : ""}`
           : lead.researched_at ? `<div class="muted small">Researched, but nothing citable was found.</div>`
           : `<div class="muted small">Not yet researched. Julian researches automatically when you generate a sequence (if enabled in Settings).</div>`}
         </div>
