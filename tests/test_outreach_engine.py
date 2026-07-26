@@ -42,6 +42,64 @@ def test_lint_passes_clean_copy():
     ) == []
 
 
+def test_lint_catches_sales_and_ai_cliches():
+    from app.adapters.llm import lint_cliches
+    flagged = lint_cliches(
+        "Hi Ada, I hope this email finds you well. I wanted to reach out "
+        "because our best-in-class platform can help you leverage synergy "
+        "and streamline your pain points. Best regards, Sam"
+    )
+    for phrase in ("i hope this email finds you well", "i wanted to reach out",
+                   "best-in-class", "leverage", "synergy", "streamline",
+                   "pain points", "best regards"):
+        assert phrase in flagged
+
+
+def test_fallback_templates_are_free_of_cliches():
+    """The no-API-key templates are real customer-facing copy — they must
+    clear the same bar the LLM output is held to."""
+    from app.adapters.llm import _template_step, lint_cliches
+    from app.models import Lead, Organization
+
+    lead = Lead(name="Ada Lovelace", company="Acme", title="VP of Engineering")
+    org = Organization(name="Kingsley", sender_name="Mo",
+                       product_description="an AI sales agent")
+    for step in (1, 2, 3, 4):
+        draft = _template_step(lead, org, step)
+        text = draft["subject"] + " " + draft["body"]
+        assert lint_cliches(text) == [], f"step {step}: {lint_cliches(text)}"
+        assert lint_spam_phrases(text) == []
+
+
+def test_cliche_in_draft_triggers_one_corrective_rewrite():
+    """A cliche-laden first draft must be sent back, exactly like a
+    spam-flagged one, rather than mailed to a prospect as-is."""
+    from app.models import Lead, Organization
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload["messages"][-1]["content"])
+        body = ("I wanted to reach out. Best regards, Mo" if len(calls) == 1
+                else "You don't know me, so I'll get to the point. Mo")
+        return httpx.Response(200, json={"choices": [
+            {"message": {"content": json.dumps(
+                {"subject": "quick one", "body": body})}}]})
+
+    adapter = OpenRouterAdapter(
+        api_key="test-key",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    draft = adapter.generate_step(
+        Lead(name="Ada Lovelace", company="Acme"),
+        Organization(name="Kingsley", sender_name="Mo"), step=1)
+
+    assert len(calls) == 2, "cliche draft should have been sent back once"
+    assert "i wanted to reach out" in calls[1].lower()  # told what was wrong
+    assert "reach out" not in draft["body"].lower()     # rewrite was kept
+
+
 # ---------- template fallback quality ----------
 
 def test_sequence_endpoint_generates_four_steps(client):

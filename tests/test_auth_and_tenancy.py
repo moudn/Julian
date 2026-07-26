@@ -5,6 +5,7 @@ organization's leads, rules, or bookings.
 """
 
 import io
+import smtplib
 
 from tests.conftest import signup
 
@@ -126,3 +127,50 @@ def test_org_cannot_approve_other_orgs_booking(anon_client, calendar):
     assert anon_client.post(f"/approve_booking/{booking_id}",
                             headers=headers_a).status_code == 200
     assert len(calendar.events) == 1
+
+
+def _break_email_sender(email_sender, monkeypatch):
+    """Simulate a mail-server rejection, e.g. an unverified SMTP_FROM domain."""
+    def _raise(*args, **kwargs):
+        raise smtplib.SMTPSenderRefused(
+            550, b"not a verified domain", "agent@example.com")
+    monkeypatch.setattr(email_sender, "send", _raise)
+
+
+def test_signup_succeeds_even_if_verification_email_fails(
+        anon_client, email_sender, monkeypatch):
+    """A broken mail server must not make account creation look like it failed
+    — the account is already committed by the time the email is sent."""
+    _break_email_sender(email_sender, monkeypatch)
+    response = anon_client.post("/auth/signup", json={
+        "organization_name": "Acme Sales", "name": "Owner",
+        "email": "owner@acme-sales.io", "password": "s3cretpass!",
+    })
+    assert response.status_code == 201
+    assert "api_key" in response.json()
+
+
+def test_resend_verification_surfaces_clean_error_on_send_failure(
+        anon_client, email_sender, monkeypatch):
+    """Previously this raised an unhandled exception -> generic 500 with no
+    useful detail. It must now return a clean, actionable error instead."""
+    api_key = signup(anon_client, verify=False)
+    _break_email_sender(email_sender, monkeypatch)
+    response = anon_client.post(
+        "/auth/resend_verification",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    assert response.status_code == 502
+    assert "smtp" in response.json()["detail"].lower()
+
+
+def test_forgot_password_still_returns_ok_if_email_send_fails(
+        anon_client, email_sender, monkeypatch):
+    """Anti-enumeration: a mail-server failure must not change the response,
+    or it would reveal whether the address has an account."""
+    signup(anon_client)
+    _break_email_sender(email_sender, monkeypatch)
+    response = anon_client.post("/auth/forgot_password",
+                                json={"email": "owner@acme-sales.io"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

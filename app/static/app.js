@@ -76,7 +76,15 @@ function route() {
   const [, name, arg] = hash.split("/");
   document.querySelectorAll("[data-nav]").forEach((a) =>
     a.classList.toggle("active", a.dataset.nav === name));
-  (routes[name] || routes.dashboard)(arg).catch(oops);
+  (routes[name] || routes.dashboard)(arg).catch((e) => {
+    oops(e);
+    // A toast alone left a blank or stale page with no explanation of why
+    // (e.g. an inactive subscription 402ing the analytics endpoint).
+    if (!$("#page").innerHTML.trim() || $("#page").dataset.page !== name) {
+      $("#page").innerHTML = `<div class="card"><div class="empty">
+        Couldn't load this page: ${esc(e.message || String(e))}</div></div>`;
+    }
+  }).then(() => { $("#page").dataset.page = name; });
 }
 window.addEventListener("hashchange", route);
 
@@ -407,8 +415,13 @@ routes.analytics = async () => {
       <span class="muted">How your outreach is landing. Reply rate is
       replies ÷ leads contacted.</span></div></div>
     ${f.contacted === 0 ? `<div class="card"><div class="empty">
-      No sent outreach yet — activate a sequence and check back once Julian
-      has emailed some leads.</div></div>` : `
+      ${f.failed ? `${f.failed} message(s) failed to send, so there's nothing
+        to measure yet. Check your email settings — open a lead's sequence to
+        see the exact send error.`
+      : f.queued ? `${f.queued} message(s) are queued but none have sent yet.
+        Sends only go out in business hours, up to your daily cap.`
+      : `No sent outreach yet — activate a sequence and check back once Julian
+        has emailed some leads.`}</div></div>` : `
     <div class="grid kpis">
       ${kpi(f.contacted, "Leads contacted")}
       ${kpi(f.reply_rate, "Reply rate", "%")}
@@ -497,7 +510,9 @@ routes.settings = async () => {
               Research each lead (company site + news) before writing</label>
             <label><input type="checkbox" name="auto_reply_enabled" style="width:auto"
               ${ORG.auto_reply_enabled ? "checked" : ""}>
-              Let Julian auto-send knowledge-base answers (off = he drafts, you approve)</label>
+              Let Julian reply on his own — knowledge-base answers, and a short
+              "here's what we do, worth a call?" brief when a lead asks what this
+              is (off = he drafts it and you send)</label>
             <button class="btn primary" type="submit">Save</button>
           </form>
         </div>
@@ -562,6 +577,27 @@ async function refreshApprovalsBadge() {
   } catch (e) { /* banner/401 already handled */ }
 }
 
+/* Julian keeps working in the background (sending steps, polling replies,
+   triaging), so a view rendered a minute ago is already stale — a lead can
+   go NOT_INTERESTED without the open page ever knowing. Re-render on a
+   timer and whenever the tab regains focus.
+
+   Skipped while the user is typing into a field or has text selected, so a
+   refresh can never wipe half-written input or fight the user. */
+const AUTO_REFRESH_MS = 20000;
+
+function userIsBusy() {
+  const el = document.activeElement;
+  if (el && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)) return true;
+  return !window.getSelection().isCollapsed;
+}
+
+function autoRefresh() {
+  if (document.hidden || userIsBusy()) return;
+  if (!localStorage.getItem("julian_key")) return;
+  route();
+}
+
 async function boot() {
   if (!localStorage.getItem("julian_key")) return ui.logout();
   try {
@@ -574,6 +610,15 @@ async function boot() {
   $("#verify-banner").classList.toggle("hidden", ORG.email_verified !== false);
   try { await api("/leads"); } catch (e) { /* 402 shows banner */ }
   route();
+
+  if (!boot._refreshing) {
+    boot._refreshing = true;
+    setInterval(autoRefresh, AUTO_REFRESH_MS);
+    // Coming back to the tab is the moment stale data is most obvious.
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) autoRefresh();
+    });
+  }
 }
 
 boot();

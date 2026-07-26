@@ -202,6 +202,12 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
         try:
             sender.send(to=lead.email, subject=message.subject,
                         body=message.body + (footer or ""))
+            # Capture the Gmail thread this outreach landed in so reply
+            # polling can scope to it instead of a blanket sender search.
+            if lead.gmail_thread_id is None:
+                thread_id = getattr(sender, "last_thread_id", None)
+                if thread_id:
+                    lead.gmail_thread_id = thread_id
         except GoogleAccessRevoked as exc:
             _notify_google_broken(db, org)
             errors.append(f"google revoked mid-cycle: {exc}")

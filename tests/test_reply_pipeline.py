@@ -28,6 +28,15 @@ def _active_lead(client) -> int:
     return 1
 
 
+def _lead_state(lead_id: int) -> str:
+    db = SessionLocal()
+    try:
+        from app.models import Lead
+        return db.get(Lead, lead_id).state.value
+    finally:
+        db.close()
+
+
 def _steps(lead_id: int) -> dict[int, str]:
     db = SessionLocal()
     try:
@@ -341,3 +350,221 @@ def test_duplicate_gmail_message_ignored(client):
         db.close()
     assert first["status"] == "processed"
     assert second["status"] == "duplicate"
+
+
+def test_curiosity_does_not_trigger_calendar_times(client, email_sender):
+    """Regression: "tell me more" auto-emailed the lead calendar slots they
+    never asked for. Only an explicit meeting request should do that; plain
+    curiosity goes to the human."""
+    lead_id = _active_lead(client)
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["category"] == "INTERESTED"
+    assert result["escalated"] is True          # a human picks it up
+    assert _lead_state(lead_id) == "ENGAGED"    # not MEETING_PROPOSED
+    assert not [m for m in email_sender.sent if "times proposed" in m["subject"]]
+
+
+def _brief_the_org(client, auto_reply=True):
+    """Give the org enough approved material to answer 'what is this?'."""
+    client.patch("/auth/org", json={
+        "product_description": "an AI sales agent that writes and sends your "
+                               "outreach and books meetings you approve",
+        "knowledge_base": "Julian never books a meeting without explicit "
+                          "human approval. Works with your existing Gmail.",
+        "auto_reply_enabled": auto_reply,
+    })
+
+
+def test_curiosity_gets_a_rundown_and_a_call_ask_not_calendar_times(
+        client, email_sender):
+    """"tell me more" is answered — what this is, then whether a call is
+    worth it — instead of either silence or unprompted calendar slots."""
+    _brief_the_org(client)
+    lead_id = _active_lead(client)
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["auto_replied"] is True
+    assert result["escalated"] is False
+    assert _lead_state(lead_id) == "ENGAGED"
+    # no times yet — they haven't agreed to a call
+    assert not [m for m in email_sender.sent if "times proposed" in m["subject"]]
+
+    sent = [m for m in client.get(f"/leads/{lead_id}/conversation").json()
+            if m["direction"] == "OUTBOUND" and m["category"] == "INTEREST_RUNDOWN"]
+    assert len(sent) == 1
+    body = sent[0]["body"].lower()
+    assert "ai sales agent" in body          # said what it actually is
+    assert "call" in body                    # and asked about a call
+
+
+def test_yes_after_the_rundown_proposes_times(client, email_sender):
+    """Julian asked "worth a call?" — a positive reply is the answer to that
+    question, so it should move to scheduling without a second explanation."""
+    _brief_the_org(client)
+    lead_id = _active_lead(client)
+    client.post("/replies/ingest", json={"lead_id": lead_id, "body": "tell me more"})
+    client.post("/replies/ingest", json={"lead_id": lead_id,
+                                         "body": "yes that sounds good"})
+
+    assert _lead_state(lead_id) == "MEETING_PROPOSED"
+    assert len([m for m in email_sender.sent
+                if "times proposed" in m["subject"]]) == 1
+    # and he didn't explain himself twice
+    rundowns = [m for m in client.get(f"/leads/{lead_id}/conversation").json()
+                if m["category"] == "INTEREST_RUNDOWN"]
+    assert len(rundowns) == 1
+
+
+def test_rundown_is_not_sent_when_auto_reply_is_off(client, email_sender):
+    """With auto-reply off the customer sends it themselves, so the reply
+    goes to a human with a draft rather than out to the lead."""
+    _brief_the_org(client, auto_reply=False)
+    lead_id = _active_lead(client)
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["auto_replied"] is False
+    assert result["escalated"] is True
+    assert not [m for m in client.get(f"/leads/{lead_id}/conversation").json()
+                if m["category"] == "INTEREST_RUNDOWN"]
+
+
+def test_no_rundown_invented_without_approved_material(client, email_sender):
+    """With no product description and no knowledge base there is nothing
+    safe to say, so Julian must hand over rather than make something up."""
+    lead_id = _active_lead(client)   # org left unbriefed
+    client.patch("/auth/org", json={"auto_reply_enabled": True})
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["auto_replied"] is False
+    assert result["escalated"] is True
+
+
+def test_explicit_meeting_request_still_proposes_times_once(client, email_sender):
+    """The genuine path must keep working — and must not fire twice."""
+    lead_id = _active_lead(client)
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "yes let's set up a call, what times work?"})
+    assert _lead_state(lead_id) == "MEETING_PROPOSED"
+
+    # one proposal == one "times proposed" FYI to the rep
+    def proposals():
+        return [m for m in email_sender.sent if "times proposed" in m["subject"]]
+    assert len(proposals()) == 1
+
+    # A further exchange must not produce a second set of times. Previously
+    # this bounced MEETING_PROPOSED -> ENGAGED and re-proposed on the next
+    # positive reply, emailing the lead slots over and over.
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "before that, what does pricing look like?"})
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "ok sounds good, happy to chat"})
+    assert len(proposals()) == 1
+
+
+def test_ordinal_needs_selection_context_to_book_a_slot():
+    """Regression: a bare "first" anywhere in a reply was read as "I pick
+    slot 1" — so "can you tell me about pricing first" created a booking and
+    told the lead a time had been pencilled in."""
+    from datetime import datetime
+
+    from app.services.replies import extract_slot_choice
+    slots = ["2026-07-20T09:00:00+00:00", "2026-07-21T14:00:00+00:00"]
+    at = lambda i: datetime.fromisoformat(slots[i])
+
+    # not a slot selection
+    assert extract_slot_choice("can you tell me about pricing first", slots) is None
+    assert extract_slot_choice("I'd need to check with my team first", slots) is None
+    assert extract_slot_choice("first of all, who else uses this?", slots) is None
+
+    # genuine selections still work
+    assert extract_slot_choice("the first one works", slots) == at(0)
+    assert extract_slot_choice("let's do the second", slots) == at(1)
+    assert extract_slot_choice("second option please", slots) == at(1)
+
+
+def test_poll_replies_scopes_to_thread_and_skips_own_sent_copy(client):
+    """Regression test: a real run had a lead's reply-polling ingest a
+    completely unrelated email as if it were that lead's reply, because the
+    old query only matched on sender address ("from:<lead email>") with no
+    correlation to the actual conversation. Once a thread id is known,
+    polling must fetch only that thread, and must ignore the org's own SENT
+    copy sitting in the same thread."""
+    from app.database import SessionLocal
+    from app.models import Lead, Organization
+    from app.services.replies import poll_replies
+
+    lead_id = _active_lead(client)
+    db = SessionLocal()
+    try:
+        lead = db.get(Lead, lead_id)
+        lead.gmail_thread_id = "thread-abc"
+        db.commit()
+        org_id = lead.org_id
+    finally:
+        db.close()
+
+    class FakeReader:
+        def get_thread_messages(self, thread_id):
+            assert thread_id == "thread-abc"
+            return [
+                {"id": "sent-1", "label_ids": ["SENT"],
+                 "subject": "Quick question", "from": "rep@acme.io",
+                 "body": "Julian's own outreach — must never be treated as a reply"},
+                {"id": "inbox-1", "label_ids": ["INBOX"],
+                 "subject": "Re: Quick question", "from": "ada@acme.io",
+                 "body": "please remove me from this list"},
+            ]
+
+        def list_message_ids(self, query, max_results=20):
+            raise AssertionError(
+                "must not fall back to a broad search once a thread id is known")
+
+    db = SessionLocal()
+    try:
+        org = db.get(Organization, org_id)
+        result = poll_replies(db, org, FakeReader())
+        lead = db.get(Lead, lead_id)
+        assert lead.state.value == "UNSUBSCRIBED"
+    finally:
+        db.close()
+
+    assert result == {"processed": 1, "duplicates": 0, "errors": []}
+
+
+def test_poll_replies_falls_back_to_search_without_a_known_thread(client):
+    """Leads with no captured thread id (e.g. sent before this feature, or
+    via SMTP) still get polled via the legacy broad search."""
+    from app.database import SessionLocal
+    from app.models import Lead, Organization
+    from app.services.replies import poll_replies
+
+    lead_id = _active_lead(client)
+    db = SessionLocal()
+    try:
+        org_id = db.get(Organization, db.get(Lead, lead_id).org_id).id
+    finally:
+        db.close()
+
+    class FakeReader:
+        def list_message_ids(self, query, max_results=20):
+            assert "ada@acme.io" in query
+            return ["m1"]
+
+        def get_message(self, message_id):
+            return {"id": message_id, "label_ids": ["INBOX"],
+                    "subject": "Re: hi", "from": "ada@acme.io",
+                    "body": "not interested, thanks"}
+
+    db = SessionLocal()
+    try:
+        org = db.get(Organization, org_id)
+        result = poll_replies(db, org, FakeReader())
+    finally:
+        db.close()
+
+    assert result == {"processed": 1, "duplicates": 0, "errors": []}

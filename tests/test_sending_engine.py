@@ -178,6 +178,48 @@ def test_gmail_adapter_builds_rfc822_payload():
     assert "Hi Ada," in decoded
 
 
+def test_gmail_adapter_exposes_thread_id_for_reply_scoping():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "gmail-msg-1", "threadId": "thread-xyz"})
+
+    adapter = GmailSenderAdapter(
+        token_provider=lambda: "tok-123",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert adapter.last_thread_id is None
+    adapter.send("ada@acme.io", "Quick question", "Hi Ada,\n\nJulian")
+    assert adapter.last_thread_id == "thread-xyz"
+
+
+def test_send_cycle_records_gmail_thread_id_on_lead(client, monkeypatch):
+    """Regression: without this, reply-polling had no way to scope to the
+    right conversation and could ingest unrelated mail (see poll_replies
+    tests) that merely shared the lead's sender address."""
+    from app.database import SessionLocal
+    from app.models import Lead
+    from app.services import sending
+
+    class FakeGmailSender:
+        def __init__(self):
+            self.last_thread_id = "thread-xyz"
+
+        def send(self, to, subject, body):
+            return "gmail-msg-1"
+
+    monkeypatch.setattr(sending, "get_outbound_sender",
+                        lambda db, org: FakeGmailSender())
+    lead_id = _lead_with_sequence(client)
+    client.post(f"/leads/{lead_id}/activate_sequence")
+    client.post("/scheduler/run")
+
+    db = SessionLocal()
+    try:
+        lead = db.get(Lead, lead_id)
+        assert lead.gmail_thread_id == "thread-xyz"
+    finally:
+        db.close()
+
+
 def test_state_machine_terminal_states_block_everything():
     import pytest
     from app.state_machine import InvalidTransition, transition

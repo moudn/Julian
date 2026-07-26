@@ -65,6 +65,13 @@ def compute_analytics(db: Session, org: Organization) -> dict:
         Lead.org_id == org.id, Lead.state == LeadState.MEETING_CONFIRMED)) or 0
     unsubscribed = db.scalar(select(func.count(Lead.id)).where(
         Lead.org_id == org.id, Lead.state == LeadState.UNSUBSCRIBED)) or 0
+    # Sends that never made it out. Without these the page just shows zeros
+    # across the board when e.g. SMTP is misconfigured, which reads as
+    # "analytics is broken" rather than "nothing actually sent".
+    failed = db.scalar(select(func.count(OutreachMessage.id)).where(
+        org_filter, OutreachMessage.status == MessageStatus.FAILED)) or 0
+    queued = db.scalar(select(func.count(OutreachMessage.id)).where(
+        org_filter, OutreachMessage.status == MessageStatus.APPROVED)) or 0
 
     contacted = len(contacted_leads)
     # only count replies from leads we actually contacted
@@ -77,6 +84,8 @@ def compute_analytics(db: Session, org: Organization) -> dict:
         "interested": interested,
         "meetings_booked": booked,
         "unsubscribed": unsubscribed,
+        "failed": failed,
+        "queued": queued,
         "reply_rate": _rate(replied, contacted),
         "interested_rate": _rate(interested, contacted),
         "meeting_rate": _rate(booked, contacted),

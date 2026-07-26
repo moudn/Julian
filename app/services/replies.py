@@ -58,6 +58,20 @@ class ReplyError(Exception):
     pass
 
 
+# Marks the outbound "here's what we do, worth a call?" reply, so it is sent
+# at most once per lead and so a later positive reply can be read as the
+# answer to the call question it asked.
+RUNDOWN_CATEGORY = "INTEREST_RUNDOWN"
+
+
+def _rundown_already_sent(db: Session, lead: Lead) -> bool:
+    return db.scalar(select(ConversationMessage).where(
+        ConversationMessage.lead_id == lead.id,
+        ConversationMessage.direction == MessageDirection.OUTBOUND,
+        ConversationMessage.category == RUNDOWN_CATEGORY,
+    )) is not None
+
+
 def _retire_pending_steps(db: Session, lead: Lead) -> None:
     steps = db.scalars(select(OutreachMessage).where(
         OutreachMessage.lead_id == lead.id,
@@ -78,6 +92,17 @@ def _postpone_pending_steps(db: Session, lead: Lead, days: int) -> None:
 
 
 _ORDINALS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3}
+_ORDINAL_WORDS = r"(first|1st|second|2nd|third|3rd)"
+# An ordinal only counts as picking a slot when it sits in a selecting
+# phrase. A bare word search matched things like "can you tell me about
+# pricing first" or "I'd need to check with my team first" and booked the
+# lead into slot 1 — then emailed them saying it was pencilled in.
+_ORDINAL_SELECTION_PATTERNS = [
+    rf"\b{_ORDINAL_WORDS}\s+(?:one|option|slot|time)\b",
+    rf"\b(?:option|slot)\s+(?:the\s+)?{_ORDINAL_WORDS}\b",
+    rf"\b(?:do|take|pick|choose|go with|prefer|book)\s+(?:the\s+)?{_ORDINAL_WORDS}\b",
+    rf"\b{_ORDINAL_WORDS}\s+(?:works|suits|is good|is best|would work|sounds good)\b",
+]
 
 
 def extract_slot_choice(body: str, proposed_slots: list[str] | None) -> datetime | None:
@@ -102,8 +127,9 @@ def extract_slot_choice(body: str, proposed_slots: list[str] | None) -> datetime
         index = int(match.group(1)) - 1
         return slots[index] if 0 <= index < len(slots) else None
 
-    ordinal_hits = {n for word, n in _ORDINALS.items()
-                    if re.search(rf"\b{word}\b", lowered)}
+    ordinal_hits = {_ORDINALS[m.group(1)]
+                    for pattern in _ORDINAL_SELECTION_PATTERNS
+                    for m in re.finditer(pattern, lowered)}
     if len(ordinal_hits) == 1:
         index = ordinal_hits.pop() - 1
         return slots[index] if 0 <= index < len(slots) else None
@@ -241,11 +267,19 @@ def ingest_reply(
             _notify_rep(notifier, org, lead, body, result.get("suggested_reply")
                         or result.get("answer") or "")
 
-    elif category == ReplyCategory.INTERESTED and lead.state in (
-            LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING, LeadState.ENGAGED):
-        # Structured path: strike while the iron is hot — propose concrete
-        # slots immediately. Falls back to human handoff if the calendar
-        # can't produce slots.
+    elif (category == ReplyCategory.INTERESTED
+          # They asked to meet outright, OR they're answering the call
+          # question Julian already put to them in the rundown below — a
+          # positive reply to "worth a call?" is a yes.
+          and (result.get("wants_meeting") or _rundown_already_sent(db, lead))
+          # And only once. Without this, a lead who replies again after
+          # times were offered drops back to ENGAGED and gets a fresh set of
+          # times on every subsequent positive reply — a real spam loop.
+          and not lead.proposed_slots
+          and lead.state in (LeadState.SEQUENCE_ACTIVE,
+                             LeadState.OUTREACH_PENDING, LeadState.ENGAGED)):
+        # Structured path: they asked for a call, so propose concrete slots.
+        # Falls back to human handoff if the calendar can't produce slots.
         _retire_pending_steps(db, lead)
         try:
             sender = outbound_sender or get_outbound_sender(db, org)
@@ -273,6 +307,49 @@ def ingest_reply(
             logger.warning("auto-propose failed for lead %s: %s", lead.id, exc)
             if lead.state != LeadState.MEETING_PROPOSED:
                 _to_engaged(lead)
+            escalated = True
+            _notify_rep(notifier, org, lead, body,
+                        result.get("suggested_reply") or "")
+
+    elif (category == ReplyCategory.INTERESTED
+          and org.auto_reply_enabled
+          # Once only — if they're still curious after the rundown, that's a
+          # conversation for a human, not a second explanation.
+          and not _rundown_already_sent(db, lead)
+          and lead.state in (LeadState.SEQUENCE_ACTIVE,
+                             LeadState.OUTREACH_PENDING, LeadState.ENGAGED)
+          and (rundown := (llm.compose_interest_reply(
+              lead, org, body, _thread_bodies(db, lead))))):
+        # Curious but hasn't committed to a call. Answer the actual question
+        # they asked — what is this? — from approved material only, and put
+        # the call to them at the end. Emailing calendar slots at this point
+        # would be answering a question they didn't ask.
+        _retire_pending_steps(db, lead)
+        if lead.state in (LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING):
+            _to_engaged(lead)
+        sender = outbound_sender or get_outbound_sender(db, org)
+        reply_subject = "Re: " + (subject or "your question")
+        try:
+            sender.send(to=lead.email, subject=reply_subject, body=rundown)
+            db.add(ConversationMessage(
+                org_id=org.id, lead_id=lead.id,
+                direction=MessageDirection.OUTBOUND,
+                subject=reply_subject, body=rundown,
+                category=RUNDOWN_CATEGORY,
+            ))
+            auto_replied = True
+            if org.sales_rep_email:
+                notifier.send(
+                    to=org.sales_rep_email,
+                    subject=f"Julian: {lead.name} asked what this is — briefed them",
+                    body=(f"{lead.name} replied:\n\n{body}\n\n----\n"
+                          f"Julian sent them this and asked whether a call is "
+                          f"worth it:\n\n{rundown}\n\n----\n"
+                          f"If they say yes you'll get an approval request. "
+                          f"No action needed right now."),
+                )
+        except (GmailError, OSError) as exc:
+            logger.warning("interest rundown failed for lead %s: %s", lead.id, exc)
             escalated = True
             _notify_rep(notifier, org, lead, body,
                         result.get("suggested_reply") or "")
@@ -394,22 +471,31 @@ def poll_replies(db: Session, org: Organization, reader: GmailReaderAdapter,
     processed, duplicates, errors = 0, 0, []
     for lead in leads:
         try:
-            message_ids = reader.list_message_ids(
-                f"from:{lead.email} newer_than:14d")
+            if lead.gmail_thread_id:
+                # Scoped to the exact conversation Julian started with this
+                # lead — can't pick up unrelated mail that merely happens to
+                # share the lead's sender address.
+                candidates = reader.get_thread_messages(lead.gmail_thread_id)
+            else:
+                # No thread captured yet (message predates this feature, or
+                # was sent before Google was connected) — fall back to the
+                # old broad search.
+                candidates = [reader.get_message(mid) for mid in
+                             reader.list_message_ids(f"from:{lead.email} newer_than:14d")]
         except GmailError as exc:
             errors.append(f"lead {lead.id}: {exc}")
             continue
-        for message_id in message_ids:
+        for message in candidates:
+            message_id = message["id"]
             exists = db.scalar(select(ConversationMessage).where(
                 ConversationMessage.org_id == org.id,
                 ConversationMessage.gmail_message_id == message_id))
             if exists:
                 duplicates += 1
                 continue
-            try:
-                message = reader.get_message(message_id)
-            except GmailError as exc:
-                errors.append(f"message {message_id}: {exc}")
+            if "SENT" in (message.get("label_ids") or []):
+                # A thread contains both directions — this is Julian's own
+                # outbound copy, not something the lead sent.
                 continue
             result = ingest_reply(
                 db, lead, org,
