@@ -60,8 +60,12 @@
       <button class="btn small" onclick="ui.checkout()">Subscribe</button>
     </div>
     <div id="verify-banner" class="banner hidden">
-      Confirm your email to start sending outreach.
-      <button class="btn small" onclick="ui.resendVerification()">Resend email</button>
+      <form onsubmit="return ui.verifyEmail(event)" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0">
+        <span>Confirm your email to start sending outreach.</span>
+        <input name="token" placeholder="Paste the code from your email" style="width:220px;margin:0">
+        <button class="btn small" type="submit">Verify</button>
+        <button class="btn small" type="button" onclick="ui.resendVerification()">Resend email</button>
+      </form>
     </div>
     <div id="page"></div>
   </main>

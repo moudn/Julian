@@ -124,6 +124,18 @@ const ui = {
       toast("Verification email sent — check your inbox.");
     } catch (e) { oops(e); }
   },
+  async verifyEmail(event) {
+    event.preventDefault();
+    const token = new FormData(event.target).get("token")?.trim();
+    if (!token) return false;
+    try {
+      await api("/auth/verify_email", { method: "POST", json: { token } });
+      toast("Email verified — you're all set.");
+      ORG = await api("/auth/me");
+      $("#verify-banner").classList.add("hidden");
+    } catch (e) { oops(e); }
+    return false;
+  },
 
   async uploadCsv(input) {
     if (!input.files.length) return;
