@@ -78,6 +78,17 @@ def _postpone_pending_steps(db: Session, lead: Lead, days: int) -> None:
 
 
 _ORDINALS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3}
+_ORDINAL_WORDS = r"(first|1st|second|2nd|third|3rd)"
+# An ordinal only counts as picking a slot when it sits in a selecting
+# phrase. A bare word search matched things like "can you tell me about
+# pricing first" or "I'd need to check with my team first" and booked the
+# lead into slot 1 — then emailed them saying it was pencilled in.
+_ORDINAL_SELECTION_PATTERNS = [
+    rf"\b{_ORDINAL_WORDS}\s+(?:one|option|slot|time)\b",
+    rf"\b(?:option|slot)\s+(?:the\s+)?{_ORDINAL_WORDS}\b",
+    rf"\b(?:do|take|pick|choose|go with|prefer|book)\s+(?:the\s+)?{_ORDINAL_WORDS}\b",
+    rf"\b{_ORDINAL_WORDS}\s+(?:works|suits|is good|is best|would work|sounds good)\b",
+]
 
 
 def extract_slot_choice(body: str, proposed_slots: list[str] | None) -> datetime | None:
@@ -102,8 +113,9 @@ def extract_slot_choice(body: str, proposed_slots: list[str] | None) -> datetime
         index = int(match.group(1)) - 1
         return slots[index] if 0 <= index < len(slots) else None
 
-    ordinal_hits = {n for word, n in _ORDINALS.items()
-                    if re.search(rf"\b{word}\b", lowered)}
+    ordinal_hits = {_ORDINALS[m.group(1)]
+                    for pattern in _ORDINAL_SELECTION_PATTERNS
+                    for m in re.finditer(pattern, lowered)}
     if len(ordinal_hits) == 1:
         index = ordinal_hits.pop() - 1
         return slots[index] if 0 <= index < len(slots) else None
@@ -241,11 +253,19 @@ def ingest_reply(
             _notify_rep(notifier, org, lead, body, result.get("suggested_reply")
                         or result.get("answer") or "")
 
-    elif category == ReplyCategory.INTERESTED and lead.state in (
-            LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING, LeadState.ENGAGED):
-        # Structured path: strike while the iron is hot — propose concrete
-        # slots immediately. Falls back to human handoff if the calendar
-        # can't produce slots.
+    elif (category == ReplyCategory.INTERESTED
+          # Only when they actually asked to meet. Plain curiosity ("tell me
+          # more") goes to the human instead — emailing calendar slots to
+          # someone who never requested a call reads as pushy.
+          and result.get("wants_meeting")
+          # And only once. Without this, a lead who replies again after
+          # times were offered drops back to ENGAGED and gets a fresh set of
+          # times on every subsequent positive reply — a real spam loop.
+          and not lead.proposed_slots
+          and lead.state in (LeadState.SEQUENCE_ACTIVE,
+                             LeadState.OUTREACH_PENDING, LeadState.ENGAGED)):
+        # Structured path: they asked for a call, so propose concrete slots.
+        # Falls back to human handoff if the calendar can't produce slots.
         _retire_pending_steps(db, lead)
         try:
             sender = outbound_sender or get_outbound_sender(db, org)

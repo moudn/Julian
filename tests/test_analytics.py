@@ -46,6 +46,37 @@ def test_empty_analytics(client):
     assert len(a["weekly"]) == 8
 
 
+def test_failed_sends_are_reported_not_silently_zero(client, monkeypatch):
+    """With a broken mail server every metric is legitimately zero, which
+    reads as "analytics is broken". The failure count explains why."""
+    import io
+
+    from app.adapters.gmail import GmailError
+    from app.services import sending
+
+    class FailingSender:
+        def send(self, to, subject, body):
+            raise GmailError("550 not a verified domain")
+
+    monkeypatch.setattr(sending, "get_outbound_sender",
+                        lambda db, org: FailingSender())
+    monkeypatch.setattr(sending, "MAX_SEND_ATTEMPTS", 1)
+
+    client.post("/leads/import", files={"file": (
+        "l.csv", io.BytesIO(CSV.encode()), "text/csv")})
+    client.post("/icp/rules", json={"name": "VP", "field": "title",
+                                    "operator": "contains", "value": "VP",
+                                    "weight": 60})
+    client.post("/leads/1/score")
+    client.post("/leads/1/generate_sequence")
+    client.post("/leads/1/activate_sequence")
+    client.post("/scheduler/run")
+
+    f = client.get("/analytics").json()["funnel"]
+    assert f["contacted"] == 0     # nothing actually went out
+    assert f["failed"] >= 1        # and the page can now say why
+
+
 def test_funnel_and_rates(client):
     _setup_three_leads(client)
     # lead 1 replies interested, lead 2 unsubscribes, lead 3 stays silent

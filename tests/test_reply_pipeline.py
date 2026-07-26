@@ -28,6 +28,15 @@ def _active_lead(client) -> int:
     return 1
 
 
+def _lead_state(lead_id: int) -> str:
+    db = SessionLocal()
+    try:
+        from app.models import Lead
+        return db.get(Lead, lead_id).state.value
+    finally:
+        db.close()
+
+
 def _steps(lead_id: int) -> dict[int, str]:
     db = SessionLocal()
     try:
@@ -341,6 +350,63 @@ def test_duplicate_gmail_message_ignored(client):
         db.close()
     assert first["status"] == "processed"
     assert second["status"] == "duplicate"
+
+
+def test_curiosity_does_not_trigger_calendar_times(client, email_sender):
+    """Regression: "tell me more" auto-emailed the lead calendar slots they
+    never asked for. Only an explicit meeting request should do that; plain
+    curiosity goes to the human."""
+    lead_id = _active_lead(client)
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["category"] == "INTERESTED"
+    assert result["escalated"] is True          # a human picks it up
+    assert _lead_state(lead_id) == "ENGAGED"    # not MEETING_PROPOSED
+    assert not [m for m in email_sender.sent if "times proposed" in m["subject"]]
+
+
+def test_explicit_meeting_request_still_proposes_times_once(client, email_sender):
+    """The genuine path must keep working — and must not fire twice."""
+    lead_id = _active_lead(client)
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "yes let's set up a call, what times work?"})
+    assert _lead_state(lead_id) == "MEETING_PROPOSED"
+
+    # one proposal == one "times proposed" FYI to the rep
+    def proposals():
+        return [m for m in email_sender.sent if "times proposed" in m["subject"]]
+    assert len(proposals()) == 1
+
+    # A further exchange must not produce a second set of times. Previously
+    # this bounced MEETING_PROPOSED -> ENGAGED and re-proposed on the next
+    # positive reply, emailing the lead slots over and over.
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "before that, what does pricing look like?"})
+    client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "ok sounds good, happy to chat"})
+    assert len(proposals()) == 1
+
+
+def test_ordinal_needs_selection_context_to_book_a_slot():
+    """Regression: a bare "first" anywhere in a reply was read as "I pick
+    slot 1" — so "can you tell me about pricing first" created a booking and
+    told the lead a time had been pencilled in."""
+    from datetime import datetime
+
+    from app.services.replies import extract_slot_choice
+    slots = ["2026-07-20T09:00:00+00:00", "2026-07-21T14:00:00+00:00"]
+    at = lambda i: datetime.fromisoformat(slots[i])
+
+    # not a slot selection
+    assert extract_slot_choice("can you tell me about pricing first", slots) is None
+    assert extract_slot_choice("I'd need to check with my team first", slots) is None
+    assert extract_slot_choice("first of all, who else uses this?", slots) is None
+
+    # genuine selections still work
+    assert extract_slot_choice("the first one works", slots) == at(0)
+    assert extract_slot_choice("let's do the second", slots) == at(1)
+    assert extract_slot_choice("second option please", slots) == at(1)
 
 
 def test_poll_replies_scopes_to_thread_and_skips_own_sent_copy(client):
