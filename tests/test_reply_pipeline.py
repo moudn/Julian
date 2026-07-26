@@ -366,6 +366,84 @@ def test_curiosity_does_not_trigger_calendar_times(client, email_sender):
     assert not [m for m in email_sender.sent if "times proposed" in m["subject"]]
 
 
+def _brief_the_org(client, auto_reply=True):
+    """Give the org enough approved material to answer 'what is this?'."""
+    client.patch("/auth/org", json={
+        "product_description": "an AI sales agent that writes and sends your "
+                               "outreach and books meetings you approve",
+        "knowledge_base": "Julian never books a meeting without explicit "
+                          "human approval. Works with your existing Gmail.",
+        "auto_reply_enabled": auto_reply,
+    })
+
+
+def test_curiosity_gets_a_rundown_and_a_call_ask_not_calendar_times(
+        client, email_sender):
+    """"tell me more" is answered — what this is, then whether a call is
+    worth it — instead of either silence or unprompted calendar slots."""
+    _brief_the_org(client)
+    lead_id = _active_lead(client)
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["auto_replied"] is True
+    assert result["escalated"] is False
+    assert _lead_state(lead_id) == "ENGAGED"
+    # no times yet — they haven't agreed to a call
+    assert not [m for m in email_sender.sent if "times proposed" in m["subject"]]
+
+    sent = [m for m in client.get(f"/leads/{lead_id}/conversation").json()
+            if m["direction"] == "OUTBOUND" and m["category"] == "INTEREST_RUNDOWN"]
+    assert len(sent) == 1
+    body = sent[0]["body"].lower()
+    assert "ai sales agent" in body          # said what it actually is
+    assert "call" in body                    # and asked about a call
+
+
+def test_yes_after_the_rundown_proposes_times(client, email_sender):
+    """Julian asked "worth a call?" — a positive reply is the answer to that
+    question, so it should move to scheduling without a second explanation."""
+    _brief_the_org(client)
+    lead_id = _active_lead(client)
+    client.post("/replies/ingest", json={"lead_id": lead_id, "body": "tell me more"})
+    client.post("/replies/ingest", json={"lead_id": lead_id,
+                                         "body": "yes that sounds good"})
+
+    assert _lead_state(lead_id) == "MEETING_PROPOSED"
+    assert len([m for m in email_sender.sent
+                if "times proposed" in m["subject"]]) == 1
+    # and he didn't explain himself twice
+    rundowns = [m for m in client.get(f"/leads/{lead_id}/conversation").json()
+                if m["category"] == "INTEREST_RUNDOWN"]
+    assert len(rundowns) == 1
+
+
+def test_rundown_is_not_sent_when_auto_reply_is_off(client, email_sender):
+    """With auto-reply off the customer sends it themselves, so the reply
+    goes to a human with a draft rather than out to the lead."""
+    _brief_the_org(client, auto_reply=False)
+    lead_id = _active_lead(client)
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["auto_replied"] is False
+    assert result["escalated"] is True
+    assert not [m for m in client.get(f"/leads/{lead_id}/conversation").json()
+                if m["category"] == "INTEREST_RUNDOWN"]
+
+
+def test_no_rundown_invented_without_approved_material(client, email_sender):
+    """With no product description and no knowledge base there is nothing
+    safe to say, so Julian must hand over rather than make something up."""
+    lead_id = _active_lead(client)   # org left unbriefed
+    client.patch("/auth/org", json={"auto_reply_enabled": True})
+    result = client.post("/replies/ingest", json={
+        "lead_id": lead_id, "body": "tell me more"}).json()
+
+    assert result["auto_replied"] is False
+    assert result["escalated"] is True
+
+
 def test_explicit_meeting_request_still_proposes_times_once(client, email_sender):
     """The genuine path must keep working — and must not fire twice."""
     lead_id = _active_lead(client)

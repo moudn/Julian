@@ -58,6 +58,20 @@ class ReplyError(Exception):
     pass
 
 
+# Marks the outbound "here's what we do, worth a call?" reply, so it is sent
+# at most once per lead and so a later positive reply can be read as the
+# answer to the call question it asked.
+RUNDOWN_CATEGORY = "INTEREST_RUNDOWN"
+
+
+def _rundown_already_sent(db: Session, lead: Lead) -> bool:
+    return db.scalar(select(ConversationMessage).where(
+        ConversationMessage.lead_id == lead.id,
+        ConversationMessage.direction == MessageDirection.OUTBOUND,
+        ConversationMessage.category == RUNDOWN_CATEGORY,
+    )) is not None
+
+
 def _retire_pending_steps(db: Session, lead: Lead) -> None:
     steps = db.scalars(select(OutreachMessage).where(
         OutreachMessage.lead_id == lead.id,
@@ -254,10 +268,10 @@ def ingest_reply(
                         or result.get("answer") or "")
 
     elif (category == ReplyCategory.INTERESTED
-          # Only when they actually asked to meet. Plain curiosity ("tell me
-          # more") goes to the human instead — emailing calendar slots to
-          # someone who never requested a call reads as pushy.
-          and result.get("wants_meeting")
+          # They asked to meet outright, OR they're answering the call
+          # question Julian already put to them in the rundown below — a
+          # positive reply to "worth a call?" is a yes.
+          and (result.get("wants_meeting") or _rundown_already_sent(db, lead))
           # And only once. Without this, a lead who replies again after
           # times were offered drops back to ENGAGED and gets a fresh set of
           # times on every subsequent positive reply — a real spam loop.
@@ -293,6 +307,49 @@ def ingest_reply(
             logger.warning("auto-propose failed for lead %s: %s", lead.id, exc)
             if lead.state != LeadState.MEETING_PROPOSED:
                 _to_engaged(lead)
+            escalated = True
+            _notify_rep(notifier, org, lead, body,
+                        result.get("suggested_reply") or "")
+
+    elif (category == ReplyCategory.INTERESTED
+          and org.auto_reply_enabled
+          # Once only — if they're still curious after the rundown, that's a
+          # conversation for a human, not a second explanation.
+          and not _rundown_already_sent(db, lead)
+          and lead.state in (LeadState.SEQUENCE_ACTIVE,
+                             LeadState.OUTREACH_PENDING, LeadState.ENGAGED)
+          and (rundown := (llm.compose_interest_reply(
+              lead, org, body, _thread_bodies(db, lead))))):
+        # Curious but hasn't committed to a call. Answer the actual question
+        # they asked — what is this? — from approved material only, and put
+        # the call to them at the end. Emailing calendar slots at this point
+        # would be answering a question they didn't ask.
+        _retire_pending_steps(db, lead)
+        if lead.state in (LeadState.SEQUENCE_ACTIVE, LeadState.OUTREACH_PENDING):
+            _to_engaged(lead)
+        sender = outbound_sender or get_outbound_sender(db, org)
+        reply_subject = "Re: " + (subject or "your question")
+        try:
+            sender.send(to=lead.email, subject=reply_subject, body=rundown)
+            db.add(ConversationMessage(
+                org_id=org.id, lead_id=lead.id,
+                direction=MessageDirection.OUTBOUND,
+                subject=reply_subject, body=rundown,
+                category=RUNDOWN_CATEGORY,
+            ))
+            auto_replied = True
+            if org.sales_rep_email:
+                notifier.send(
+                    to=org.sales_rep_email,
+                    subject=f"Julian: {lead.name} asked what this is — briefed them",
+                    body=(f"{lead.name} replied:\n\n{body}\n\n----\n"
+                          f"Julian sent them this and asked whether a call is "
+                          f"worth it:\n\n{rundown}\n\n----\n"
+                          f"If they say yes you'll get an approval request. "
+                          f"No action needed right now."),
+                )
+        except (GmailError, OSError) as exc:
+            logger.warning("interest rundown failed for lead %s: %s", lead.id, exc)
             escalated = True
             _notify_rep(notifier, org, lead, body,
                         result.get("suggested_reply") or "")

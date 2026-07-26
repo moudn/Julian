@@ -510,7 +510,9 @@ routes.settings = async () => {
               Research each lead (company site + news) before writing</label>
             <label><input type="checkbox" name="auto_reply_enabled" style="width:auto"
               ${ORG.auto_reply_enabled ? "checked" : ""}>
-              Let Julian auto-send knowledge-base answers (off = he drafts, you approve)</label>
+              Let Julian reply on his own — knowledge-base answers, and a short
+              "here's what we do, worth a call?" brief when a lead asks what this
+              is (off = he drafts it and you send)</label>
             <button class="btn primary" type="submit">Save</button>
           </form>
         </div>
