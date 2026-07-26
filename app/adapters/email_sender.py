@@ -34,8 +34,21 @@ class EmailSenderAdapter:
         message["Subject"] = subject
         message.set_content(body)
 
-        with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port) as smtp:
-            smtp.starttls()
-            if self.settings.smtp_user:
-                smtp.login(self.settings.smtp_user, self.settings.smtp_password)
-            smtp.send_message(message)
+        try:
+            with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port) as smtp:
+                smtp.starttls()
+                if self.settings.smtp_user:
+                    smtp.login(self.settings.smtp_user, self.settings.smtp_password)
+                smtp.send_message(message)
+        except (smtplib.SMTPException, OSError):
+            # smtplib.SMTPException already subclasses OSError, so callers that
+            # catch OSError (sending.py, replies.py) keep working unchanged —
+            # this just adds server-side visibility into *why* a send failed
+            # (bad SMTP_FROM, wrong creds, unreachable host, etc.) without
+            # putting the message body in the log.
+            logger.error(
+                "SMTP send failed: to=%s subject=%r host=%s:%s from=%s",
+                to, subject, self.settings.smtp_host, self.settings.smtp_port,
+                self.settings.smtp_from, exc_info=True,
+            )
+            raise

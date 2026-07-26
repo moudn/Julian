@@ -1,3 +1,4 @@
+import logging
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -19,6 +20,12 @@ from app.security import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
+
+EMAIL_SEND_ERROR_DETAIL = (
+    "Couldn't send the email — the mail server rejected it or is unreachable. "
+    "Check SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASSWORD/SMTP_FROM and try again."
+)
 
 
 class SignupRequest(BaseModel):
@@ -98,7 +105,14 @@ def signup(request: SignupRequest, http_request: Request,
     db.commit()
     db.refresh(user)
 
-    _send_verification_email(email_sender, user)
+    try:
+        _send_verification_email(email_sender, user)
+    except OSError as exc:
+        # The account already exists at this point (committed above) — a
+        # broken mail server shouldn't make signup look like it failed.
+        # The user can retry from the dashboard's "Resend email" button.
+        logger.error("verification email failed to send during signup for "
+                     "user %s: %s", user.id, exc)
 
     return AuthResponse(
         api_key=generate_api_key(db, user), organization_id=org.id, user_id=user.id
@@ -139,7 +153,11 @@ def resend_verification(user: User = Depends(get_current_user),
                         email_sender=Depends(get_email_sender)):
     if user.email_verified:
         return {"status": "ok", "message": "Already verified."}
-    _send_verification_email(email_sender, user)
+    try:
+        _send_verification_email(email_sender, user)
+    except OSError as exc:
+        logger.error("resend_verification failed for user %s: %s", user.id, exc)
+        raise HTTPException(status_code=502, detail=EMAIL_SEND_ERROR_DETAIL) from exc
     return {"status": "ok", "message": "Verification email sent."}
 
 
@@ -174,15 +192,20 @@ def forgot_password(request: ForgotPasswordRequest, http_request: Request,
     user = db.scalar(select(User).where(User.email == request.email))
     if user is not None:
         token = make_reset_token(user.id)
-        email_sender.send(
-            to=user.email,
-            subject="Reset your Julian password",
-            body=(f"Hi {user.name},\n\nUse this token to set a new password "
-                  f"(valid for 1 hour):\n\n{token}\n\n"
-                  "POST it with your new password to /auth/reset_password, or "
-                  "paste it into the dashboard's reset form.\n\n"
-                  "If you didn't request this, you can ignore this email."),
-        )
+        try:
+            email_sender.send(
+                to=user.email,
+                subject="Reset your Julian password",
+                body=(f"Hi {user.name},\n\nUse this token to set a new password "
+                      f"(valid for 1 hour):\n\n{token}\n\n"
+                      "POST it with your new password to /auth/reset_password, or "
+                      "paste it into the dashboard's reset form.\n\n"
+                      "If you didn't request this, you can ignore this email."),
+            )
+        except OSError as exc:
+            # Anti-enumeration: never let a mail-server failure change the
+            # response — always answer "ok" regardless of what happened.
+            logger.error("forgot_password email failed for user %s: %s", user.id, exc)
     return {"status": "ok",
             "message": "If that email has an account, a reset token was sent."}
 
