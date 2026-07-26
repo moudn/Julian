@@ -341,3 +341,86 @@ def test_duplicate_gmail_message_ignored(client):
         db.close()
     assert first["status"] == "processed"
     assert second["status"] == "duplicate"
+
+
+def test_poll_replies_scopes_to_thread_and_skips_own_sent_copy(client):
+    """Regression test: a real run had a lead's reply-polling ingest a
+    completely unrelated email as if it were that lead's reply, because the
+    old query only matched on sender address ("from:<lead email>") with no
+    correlation to the actual conversation. Once a thread id is known,
+    polling must fetch only that thread, and must ignore the org's own SENT
+    copy sitting in the same thread."""
+    from app.database import SessionLocal
+    from app.models import Lead, Organization
+    from app.services.replies import poll_replies
+
+    lead_id = _active_lead(client)
+    db = SessionLocal()
+    try:
+        lead = db.get(Lead, lead_id)
+        lead.gmail_thread_id = "thread-abc"
+        db.commit()
+        org_id = lead.org_id
+    finally:
+        db.close()
+
+    class FakeReader:
+        def get_thread_messages(self, thread_id):
+            assert thread_id == "thread-abc"
+            return [
+                {"id": "sent-1", "label_ids": ["SENT"],
+                 "subject": "Quick question", "from": "rep@acme.io",
+                 "body": "Julian's own outreach — must never be treated as a reply"},
+                {"id": "inbox-1", "label_ids": ["INBOX"],
+                 "subject": "Re: Quick question", "from": "ada@acme.io",
+                 "body": "please remove me from this list"},
+            ]
+
+        def list_message_ids(self, query, max_results=20):
+            raise AssertionError(
+                "must not fall back to a broad search once a thread id is known")
+
+    db = SessionLocal()
+    try:
+        org = db.get(Organization, org_id)
+        result = poll_replies(db, org, FakeReader())
+        lead = db.get(Lead, lead_id)
+        assert lead.state.value == "UNSUBSCRIBED"
+    finally:
+        db.close()
+
+    assert result == {"processed": 1, "duplicates": 0, "errors": []}
+
+
+def test_poll_replies_falls_back_to_search_without_a_known_thread(client):
+    """Leads with no captured thread id (e.g. sent before this feature, or
+    via SMTP) still get polled via the legacy broad search."""
+    from app.database import SessionLocal
+    from app.models import Lead, Organization
+    from app.services.replies import poll_replies
+
+    lead_id = _active_lead(client)
+    db = SessionLocal()
+    try:
+        org_id = db.get(Organization, db.get(Lead, lead_id).org_id).id
+    finally:
+        db.close()
+
+    class FakeReader:
+        def list_message_ids(self, query, max_results=20):
+            assert "ada@acme.io" in query
+            return ["m1"]
+
+        def get_message(self, message_id):
+            return {"id": message_id, "label_ids": ["INBOX"],
+                    "subject": "Re: hi", "from": "ada@acme.io",
+                    "body": "not interested, thanks"}
+
+    db = SessionLocal()
+    try:
+        org = db.get(Organization, org_id)
+        result = poll_replies(db, org, FakeReader())
+    finally:
+        db.close()
+
+    assert result == {"processed": 1, "duplicates": 0, "errors": []}

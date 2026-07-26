@@ -394,22 +394,31 @@ def poll_replies(db: Session, org: Organization, reader: GmailReaderAdapter,
     processed, duplicates, errors = 0, 0, []
     for lead in leads:
         try:
-            message_ids = reader.list_message_ids(
-                f"from:{lead.email} newer_than:14d")
+            if lead.gmail_thread_id:
+                # Scoped to the exact conversation Julian started with this
+                # lead — can't pick up unrelated mail that merely happens to
+                # share the lead's sender address.
+                candidates = reader.get_thread_messages(lead.gmail_thread_id)
+            else:
+                # No thread captured yet (message predates this feature, or
+                # was sent before Google was connected) — fall back to the
+                # old broad search.
+                candidates = [reader.get_message(mid) for mid in
+                             reader.list_message_ids(f"from:{lead.email} newer_than:14d")]
         except GmailError as exc:
             errors.append(f"lead {lead.id}: {exc}")
             continue
-        for message_id in message_ids:
+        for message in candidates:
+            message_id = message["id"]
             exists = db.scalar(select(ConversationMessage).where(
                 ConversationMessage.org_id == org.id,
                 ConversationMessage.gmail_message_id == message_id))
             if exists:
                 duplicates += 1
                 continue
-            try:
-                message = reader.get_message(message_id)
-            except GmailError as exc:
-                errors.append(f"message {message_id}: {exc}")
+            if "SENT" in (message.get("label_ids") or []):
+                # A thread contains both directions — this is Julian's own
+                # outbound copy, not something the lead sent.
                 continue
             result = ingest_reply(
                 db, lead, org,

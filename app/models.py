@@ -203,6 +203,11 @@ class Lead(Base):
     research_sources: Mapped[list | None] = mapped_column(JSON, nullable=True)
     researched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # Gmail thread of the FIRST message Julian sent this lead. Reply polling
+    # scopes to this thread instead of a blanket "from:<lead email>" search,
+    # so it can't accidentally ingest unrelated mail that happens to share
+    # the same sender address (e.g. self-testing with your own inbox).
+    gmail_thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

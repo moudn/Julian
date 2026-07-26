@@ -49,17 +49,32 @@ class GmailReaderAdapter:
         return [m["id"] for m in data.get("messages", [])]
 
     def get_message(self, message_id: str) -> dict:
-        """Return {id, subject, from, body} for one message."""
+        """Return {id, subject, from, body, label_ids} for one message."""
         data = self._get(f"/users/me/messages/{message_id}", params={"format": "full"})
-        payload = data.get("payload", {})
-        headers = {h["name"].lower(): h["value"]
-                   for h in payload.get("headers", [])}
-        return {
-            "id": data.get("id", message_id),
-            "subject": headers.get("subject", ""),
-            "from": headers.get("from", ""),
-            "body": _extract_plain_text(payload),
-        }
+        return _parse_message(data)
+
+    def get_thread_messages(self, thread_id: str) -> list[dict]:
+        """Return every message in a Gmail thread, in the same shape as
+        get_message. Used to scope reply-polling to the specific
+        conversation Julian started with a lead, rather than a blanket
+        sender-address search across the whole mailbox."""
+        data = self._get(f"/users/me/threads/{thread_id}", params={"format": "full"})
+        return [_parse_message(m) for m in data.get("messages", [])]
+
+
+def _parse_message(data: dict) -> dict:
+    payload = data.get("payload", {})
+    headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+    return {
+        "id": data.get("id"),
+        "thread_id": data.get("threadId"),
+        # "SENT" means this account sent it — used to tell Julian's own
+        # outbound copy apart from a genuine inbound reply within a thread.
+        "label_ids": data.get("labelIds", []),
+        "subject": headers.get("subject", ""),
+        "from": headers.get("from", ""),
+        "body": _extract_plain_text(payload),
+    }
 
 
 def _extract_plain_text(payload: dict) -> str:
@@ -91,6 +106,9 @@ class GmailSenderAdapter:
         self.base_url = get_settings().gmail_api_base.rstrip("/")
         self._client = client or httpx.Client(timeout=30)
         self.sent: list[dict[str, str]] = []  # local record for inspection
+        # Thread of the message just sent — callers use this to record which
+        # Gmail conversation a lead's reply-polling should be scoped to.
+        self.last_thread_id: str | None = None
 
     def send(self, to: str, subject: str, body: str) -> str:
         """Send a plain-text email as the connected account; returns Gmail id."""
@@ -116,4 +134,6 @@ class GmailSenderAdapter:
             raise GmailError(f"Gmail API request failed: {exc}") from exc
 
         self.sent.append({"to": to, "subject": subject, "body": body})
-        return response.json().get("id", "")
+        result = response.json()
+        self.last_thread_id = result.get("threadId")
+        return result.get("id", "")
