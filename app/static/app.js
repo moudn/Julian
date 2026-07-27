@@ -155,7 +155,14 @@ const ui = {
     body.append("file", input.files[0]);
     try {
       const result = await api("/leads/import", { method: "POST", body });
-      toast(`Imported ${result.imported}, skipped ${result.skipped}.`);
+      // The API says exactly why each row was skipped; showing only the
+      // counts left "0 imported" looking like an unexplained failure.
+      const why = (result.errors || []).slice(0, 3).join(" · ");
+      const more = (result.errors || []).length > 3
+        ? ` (+${result.errors.length - 3} more)` : "";
+      toast(`Imported ${result.imported}, skipped ${result.skipped}.`
+            + (why ? ` — ${why}${more}` : ""),
+            result.imported === 0 && result.skipped > 0);
       route();
     } catch (e) { oops(e); }
     input.value = "";

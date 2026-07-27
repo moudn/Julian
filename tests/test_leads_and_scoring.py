@@ -31,6 +31,51 @@ def test_csv_import(client):
     assert leads[0]["company_size"] == 250
 
 
+def _upload(client, text, name="leads.csv"):
+    return client.post("/leads/import", files={
+        "file": (name, io.BytesIO(text.encode()), "text/csv")}).json()
+
+
+def test_reimport_adds_new_rows_and_explains_the_skips(client):
+    """Re-uploading a list with one row added is the normal way people grow
+    a lead list — the new row must land, and the UI needs to be told why the
+    rest didn't."""
+    first = "name,email\nAda,ada@acme.io\nBob,bob@acme.io\n"
+    assert _upload(client, first)["imported"] == 2
+
+    again = first + "Carol,carol@acme.io\n"
+    result = _upload(client, again)
+    assert result["imported"] == 1
+    assert result["skipped"] == 2
+    assert all("duplicate email" in e for e in result["errors"])
+    assert {lead["name"] for lead in client.get("/leads").json()} == {
+        "Ada", "Bob", "Carol"}
+
+
+def test_import_accepts_split_first_and_last_name_columns(client):
+    """Apollo/HubSpot/LinkedIn exports ship first+last, not a single name."""
+    result = _upload(client, "First Name,Last Name,Email,Company\n"
+                             "Dan,Smith,dan@acme.io,Acme\n")
+    assert result["imported"] == 1
+    assert client.get("/leads").json()[0]["name"] == "Dan Smith"
+
+
+def test_import_handles_semicolon_separated_files(client):
+    """Excel writes ';' in many locales; read as commas every row looked
+    like it was missing a name."""
+    result = _upload(client, "name;email;company;title\n"
+                             "Eve;eve@acme.io;Acme;VP\n")
+    assert result["imported"] == 1
+    assert client.get("/leads").json()[0]["email"] == "eve@acme.io"
+
+
+def test_unrecognisable_header_says_so_instead_of_silently_skipping(client):
+    result = _upload(client, "foo,bar\n1,2\n")
+    assert result["imported"] == 0
+    assert "No recognisable columns" in result["errors"][0]
+    assert "foo" in result["errors"][0]   # shows what it actually found
+
+
 def test_rejects_non_csv(client):
     response = client.post(
         "/leads/import",
