@@ -36,6 +36,80 @@ def test_ssrf_guard_blocks_private_and_bad_schemes():
     assert _safe_to_fetch("https://example.com/") is True
 
 
+def test_ssrf_guard_is_reapplied_on_every_redirect_hop(monkeypatch):
+    """A lead's domain is attacker-controlled input. Checking only the first
+    URL let a public host 302 into the cloud metadata service, whose response
+    then landed in the lead's research notes."""
+    import app.adapters.research as research_mod
+
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if "evil-lead-domain.com" in str(request.url):
+            return httpx.Response(302, headers={
+                "Location": "http://169.254.169.254/latest/meta-data/iam/"})
+        return httpx.Response(200, text="CLOUD-CREDENTIALS")
+
+    # Only DNS is stubbed; the real scheme/IP checks still run, so the
+    # metadata address must still be rejected on its own merits.
+    monkeypatch.setattr(research_mod, "_host_is_public",
+                        lambda host: host == "evil-lead-domain.com")
+
+    class Lead:
+        domain = "evil-lead-domain.com"
+        company = "Evil"
+        id = 1
+
+    result = _researcher(handler)._fetch_website(Lead())
+
+    assert not any("169.254.169.254" in url for url in requested), \
+        "followed a redirect into the metadata service"
+    assert result is None
+
+
+def test_ordinary_redirects_are_still_followed(monkeypatch):
+    """The guard must not break normal www/https redirects."""
+    import app.adapters.research as research_mod
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://acme.io":
+            return httpx.Response(301, headers={"Location": "https://www.acme.io/"})
+        return httpx.Response(200, text="<p>Acme builds robots.</p>")
+
+    monkeypatch.setattr(research_mod, "_host_is_public", lambda host: True)
+
+    class Lead:
+        domain = "acme.io"
+        company = "Acme"
+        id = 1
+
+    text, url = _researcher(handler)._fetch_website(Lead())
+    assert "Acme builds robots." in text
+    assert url == "https://www.acme.io/"
+
+
+def test_redirect_loop_is_bounded(monkeypatch):
+    import app.adapters.research as research_mod
+
+    hops = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hops.append(str(request.url))
+        return httpx.Response(302, headers={
+            "Location": f"https://acme.io/{len(hops)}"})
+
+    monkeypatch.setattr(research_mod, "_host_is_public", lambda host: True)
+
+    class Lead:
+        domain = "acme.io"
+        company = "Acme"
+        id = 1
+
+    assert _researcher(handler)._fetch_website(Lead()) is None
+    assert len(hops) <= research_mod.MAX_REDIRECTS + 1
+
+
 # ---------- researcher orchestration ----------
 
 class FakeLLM:
@@ -54,9 +128,11 @@ def _researcher(handler, llm=None, search_key="test-search"):
     monkey = get_settings()
     monkey.search_api_key = search_key
     transport = httpx.MockTransport(handler)
+    # follow_redirects stays False, as in production: the researcher walks
+    # redirects itself so the SSRF guard sees every hop.
     return LeadResearcher(llm=llm or FakeLLM(),
                           client=httpx.Client(transport=transport,
-                                              follow_redirects=True))
+                                              follow_redirects=False))
 
 
 def test_research_gathers_site_and_news(monkeypatch):

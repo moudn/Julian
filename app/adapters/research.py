@@ -29,6 +29,7 @@ _SCRIPT_STYLE_RE = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>",
                               re.IGNORECASE | re.DOTALL)
 _WS_RE = re.compile(r"\s+")
 MAX_MATERIAL_CHARS = 3500
+MAX_REDIRECTS = 5
 
 
 def _host_is_public(host: str) -> bool:
@@ -68,8 +69,11 @@ class LeadResearcher:
         self.timeout = settings.research_timeout_seconds
         self.search_api_key = settings.search_api_key
         self.search_base_url = settings.search_base_url.rstrip("/")
+        # Redirects are followed manually (see _get_guarded) so every hop is
+        # re-checked against the SSRF guard. Letting httpx follow them meant
+        # a lead's own domain could 302 into the cloud metadata service.
         self._client = client or httpx.Client(
-            timeout=self.timeout, follow_redirects=True,
+            timeout=self.timeout, follow_redirects=False,
             headers={"User-Agent": "JulianResearch/1.0"})
 
     # ---------- public ----------
@@ -114,20 +118,41 @@ class LeadResearcher:
                 return candidate
         return None
 
+    def _get_guarded(self, url: str) -> httpx.Response | None:
+        """GET a URL, re-running the SSRF guard on every redirect hop.
+
+        The guard is only meaningful if it sees every address actually
+        contacted. A lead's domain is attacker-controllable input, so a
+        public host that 302s to 169.254.169.254 would otherwise pull cloud
+        credentials straight into the lead's research notes.
+        """
+        for _ in range(MAX_REDIRECTS + 1):
+            if not _safe_to_fetch(url):
+                logger.info("blocked unsafe research URL: %s", url)
+                return None
+            response = self._client.get(url)
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    return None
+                # Relative redirects resolve against the URL just fetched.
+                url = str(httpx.URL(url).join(location))
+                continue
+            response.raise_for_status()
+            return response
+        logger.info("too many redirects while researching %s", url)
+        return None
+
     def _fetch_website(self, lead) -> tuple[str, str] | None:
         domain = self._domain_for(lead)
         if not domain:
             return None
-        url = f"https://{domain}"
-        if not _safe_to_fetch(url):
-            logger.info("skipping unsafe research URL for lead %s: %s",
-                        getattr(lead, "id", "?"), url)
-            return None
         try:
-            response = self._client.get(url)
-            response.raise_for_status()
+            response = self._get_guarded(f"https://{domain}")
         except httpx.HTTPError as exc:
-            logger.info("website fetch failed (%s): %s", url, exc)
+            logger.info("website fetch failed (%s): %s", domain, exc)
+            return None
+        if response is None:
             return None
         text = html_to_text(response.text)[:MAX_MATERIAL_CHARS]
         return (text, str(response.url)) if text else None
