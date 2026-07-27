@@ -155,7 +155,14 @@ const ui = {
     body.append("file", input.files[0]);
     try {
       const result = await api("/leads/import", { method: "POST", body });
-      toast(`Imported ${result.imported}, skipped ${result.skipped}.`);
+      // The API says exactly why each row was skipped; showing only the
+      // counts left "0 imported" looking like an unexplained failure.
+      const why = (result.errors || []).slice(0, 3).join(" · ");
+      const more = (result.errors || []).length > 3
+        ? ` (+${result.errors.length - 3} more)` : "";
+      toast(`Imported ${result.imported}, skipped ${result.skipped}.`
+            + (why ? ` — ${why}${more}` : ""),
+            result.imported === 0 && result.skipped > 0);
       route();
     } catch (e) { oops(e); }
     input.value = "";
@@ -231,6 +238,34 @@ const ui = {
       const result = await api("/integrations/google/connect");
       window.open(result.authorize_url, "_blank");
       toast("Approve access in the new tab, then refresh this page.");
+    } catch (e) { oops(e); }
+  },
+  async deleteLead(id, name) {
+    if (!confirm(
+      `Permanently erase ${name} — their details, drafts, conversation and `
+      + `bookings.\n\nTheir email address is also added to your `
+      + `do-not-contact list, so Julian can't mail it again. You can undo `
+      + `that from Settings if you need the address back.\n\nDelete?`)) return;
+    try {
+      await api(`/leads/${id}`, { method: "DELETE" });
+      toast(`${name} deleted.`);
+      location.hash = "#/leads";
+    } catch (e) { oops(e); }
+  },
+  async removeSuppression(id, email, reason) {
+    // Re-contacting someone who explicitly opted out is the risky case, so
+    // that confirmation says plainly what it means.
+    const warning = reason === "unsubscribed" || reason === "erased"
+      ? `${email} asked not to be contacted again.\n\nRemoving them lets `
+        + `Julian email this address. Only do this if you have a genuine `
+        + `reason — re-contacting someone after an opt-out can breach `
+        + `anti-spam law.\n\nRemove anyway?`
+      : `Allow Julian to contact ${email} again?`;
+    if (!confirm(warning)) return;
+    try {
+      await api(`/suppressions/${id}`, { method: "DELETE" });
+      toast(`${email} can be contacted again.`);
+      route();
     } catch (e) { oops(e); }
   },
   async googleDisconnect() {
@@ -313,6 +348,8 @@ async function leadDetail(id) {
     actions.push(act("Propose meeting now", "propose_meeting"));
   }
   if (lead.state === "ENGAGED") actions.push(act("Propose meeting times", "propose_meeting", true));
+  actions.push(`<button class="btn danger" onclick="ui.deleteLead(${id}, '${esc(lead.name)}')"
+    >Delete lead</button>`);
 
   $("#page").innerHTML = `
     <div class="page-head">
@@ -481,8 +518,9 @@ routes.approvals = async () => {
 
 routes.settings = async () => {
   ORG = ORG || await api("/auth/me");
-  const [google, billing, rules] = await Promise.all([
+  const [google, billing, rules, suppressions] = await Promise.all([
     api("/integrations/google/status"), api("/billing/status"), api("/icp/rules"),
+    api("/suppressions"),
   ]);
   $("#page").innerHTML = `
     <div class="page-head"><h1>Settings</h1></div>
@@ -562,6 +600,25 @@ routes.settings = async () => {
               ? `<p>✅ Subscription ${esc(billing.subscription_status)}${billing.current_period_end ? " · renews " + fmtDate(billing.current_period_end) : ""}</p>`
               : `<p>⚠️ No active subscription (${esc(billing.subscription_status)}).</p>
                  <button class="btn primary" onclick="ui.checkout()">Subscribe</button>`}
+        </div>
+        <div class="card"><h2>Do-not-contact list</h2>
+          <p class="muted small">Julian will never email these addresses, and
+            they can't be re-imported. Opt-outs land here automatically.</p>
+          ${suppressions.length ? `<table>
+            <tr><th>Address</th><th>Why</th><th>Added</th><th></th></tr>
+            ${suppressions.map((s) => `<tr>
+              <td>${esc(s.email)}</td>
+              <td class="muted small">${esc(s.reason_label)}</td>
+              <td class="muted small">${fmtDate(s.created_at)}</td>
+              <td><button class="btn danger small"
+                onclick="ui.removeSuppression(${s.id}, '${esc(s.email)}', '${esc(s.reason)}')"
+                >Remove</button></td></tr>`).join("")}
+          </table>
+          <p class="muted small" style="margin-top:10px">Removing an address
+            means Julian can contact it again. If they asked you to stop,
+            that's your call and your liability — check you have a genuine
+            reason first.</p>`
+          : `<div class="empty">Nobody has opted out yet.</div>`}
         </div>
       </div>
     </div>`;

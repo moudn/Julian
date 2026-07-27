@@ -32,6 +32,18 @@ def _extract_fields(row: dict[str, str]) -> dict[str, Any]:
             if normalized.get(alias):
                 fields[field] = normalized[alias]
                 break
+    if not fields.get("name"):
+        # Most CRM/prospecting exports (Apollo, HubSpot, LinkedIn) ship
+        # separate first/last name columns rather than a single "name".
+        first = next((normalized.get(a) for a in ("first_name", "first name",
+                                                  "firstname", "given name")
+                      if normalized.get(a)), "")
+        last = next((normalized.get(a) for a in ("last_name", "last name",
+                                                 "surname", "family name")
+                     if normalized.get(a)), "")
+        combined = " ".join(part for part in (first, last) if part)
+        if combined:
+            fields["name"] = combined
     if "company_size" in fields:
         try:
             fields["company_size"] = int(fields["company_size"])
@@ -42,6 +54,25 @@ def _extract_fields(row: dict[str, str]) -> dict[str, Any]:
 
 MAX_CSV_BYTES = 2 * 1024 * 1024
 MAX_CSV_ROWS = 5000
+
+NAME_COLUMNS = {"first_name", "first name", "firstname", "given name",
+                "last_name", "last name", "surname", "family name"}
+
+
+def _sniff_delimiter(text: str) -> str:
+    """Excel writes ';' (and sometimes tab) depending on the user's locale.
+    Reading such a file as comma-separated yields one giant column and every
+    row looks like it's missing a name."""
+    header = text.splitlines()[0] if text.splitlines() else ""
+    counts = {d: header.count(d) for d in (",", ";", "\t", "|")}
+    best = max(counts, key=counts.get)
+    return best if counts[best] else ","
+
+
+def _recognised_columns(fieldnames) -> bool:
+    present = {(f or "").strip().lower() for f in fieldnames}
+    known = {alias for aliases in CSV_FIELD_ALIASES.values() for alias in aliases}
+    return bool(present & (known | NAME_COLUMNS))
 
 
 def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int, list[str]]:
@@ -57,9 +88,15 @@ def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int
     except UnicodeDecodeError:
         return 0, 0, ["File is not valid UTF-8 text"]
 
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(text), delimiter=_sniff_delimiter(text))
     if not reader.fieldnames:
         return 0, 0, ["CSV file is empty"]
+    if not _recognised_columns(reader.fieldnames):
+        return 0, 0, [
+            "No recognisable columns. The header row needs at least a name "
+            "column (name, or first_name + last_name) — found: "
+            + ", ".join(f or "" for f in reader.fieldnames)[:200]
+        ]
 
     from app.services.suppression import is_suppressed
 

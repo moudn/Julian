@@ -20,6 +20,7 @@ from app.routers import (
     leads,
     replies,
     scheduler,
+    suppressions,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -114,6 +115,7 @@ app.include_router(bookings.router)
 app.include_router(replies.router)
 app.include_router(scheduler.router)
 app.include_router(analytics.router)
+app.include_router(suppressions.router)
 
 
 @app.middleware("http")

@@ -50,7 +50,9 @@ class AuthResponse(BaseModel):
 class OrgSettingsIn(BaseModel):
     sender_name: str | None = Field(default=None, max_length=255)
     sales_rep_email: EmailStr | None = None
-    score_threshold: float | None = None
+    # A negative threshold silently passes every lead, including ones the
+    # ICP rules scored at zero — an accidental way to blast an entire list.
+    score_threshold: float | None = Field(default=None, ge=0, le=1000)
     product_description: str | None = Field(default=None, max_length=2000)
     email_footer: str | None = Field(default=None, max_length=1000)
     knowledge_base: str | None = Field(default=None, max_length=10000)
