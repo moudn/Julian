@@ -1,3 +1,5 @@
+import logging
+import time
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +18,7 @@ from app.database import get_db
 from app.models import GoogleCredential, Organization, utcnow
 
 router = APIRouter(prefix="/integrations/google", tags=["integrations"])
+logger = logging.getLogger(__name__)
 
 
 class ConnectOut(BaseModel):
@@ -100,6 +103,40 @@ def _fetch_account_email(access_token: str | None) -> str | None:
         return None
 
 
+# Revocation happens in Google's UI, so nothing tells Julian about it. The
+# stored `broken` flag is only set when a send fails, which means the
+# dashboard could report "Connected" for days while outreach silently went
+# nowhere. Verify against Google when showing status, cached briefly so
+# re-renders don't hammer the API.
+_VERIFY_TTL_SECONDS = 60
+_verify_cache: dict[int, float] = {}
+
+
+def _verify_connection(db: Session, credential: GoogleCredential) -> None:
+    """Ask Google whether the connection still works; mark it broken if not."""
+    from app.adapters.google_oauth import GoogleAccessRevoked, get_valid_access_token
+
+    # None, not 0.0, for "never checked": time.monotonic() is measured from
+    # boot, so a 0.0 sentinel makes the first check on a freshly started
+    # machine look recent and skip verification for the first minute.
+    last = _verify_cache.get(credential.org_id)
+    if credential.broken or (last is not None
+                             and time.monotonic() - last < _VERIFY_TTL_SECONDS):
+        return
+    _verify_cache[credential.org_id] = time.monotonic()
+    try:
+        token = get_valid_access_token(db, credential)
+        if _fetch_account_email(token) is None:
+            # Token looked valid but Google refused it — force a refresh,
+            # which is what actually distinguishes revoked from expired.
+            get_valid_access_token(db, credential, force_refresh=True)
+    except GoogleAccessRevoked:
+        pass  # get_valid_access_token has already flagged it
+    except GoogleOAuthError as exc:
+        logger.info("could not verify Google connection for org %s: %s",
+                    credential.org_id, exc)
+
+
 @router.get("/status", response_model=StatusOut)
 def status(org: Organization = Depends(get_current_org), db: Session = Depends(get_db)):
     credential = db.scalar(
@@ -107,6 +144,8 @@ def status(org: Organization = Depends(get_current_org), db: Session = Depends(g
     )
     if credential is None:
         return StatusOut(connected=False)
+    _verify_connection(db, credential)
+    db.refresh(credential)
     return StatusOut(connected=True, account_email=credential.account_email,
                      calendar_id=credential.calendar_id,
                      broken=credential.broken, broken_reason=credential.broken_reason)

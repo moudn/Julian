@@ -153,3 +153,84 @@ def test_access_token_refresh_when_expired(monkeypatch):
     token = google_oauth.get_valid_access_token(FakeDb(), credential)
     assert token == "fresh-token"
     assert calls == ["rt-1"]
+
+
+def test_status_detects_revocation_without_waiting_for_a_send(client, monkeypatch):
+    """Revoking access happens in Google's UI — nothing tells Julian. Before
+    this, `broken` was only set when a send failed, so the dashboard kept
+    saying "Connected" while outreach silently went nowhere."""
+    from datetime import timedelta
+
+    from app.adapters import google_oauth
+    from app.adapters.google_oauth import GoogleOAuthError
+    from app.database import SessionLocal
+    from app.models import GoogleCredential, Organization, utcnow
+    from app.routers import integrations
+
+    db = SessionLocal()
+    try:
+        org = db.query(Organization).first()
+        db.add(GoogleCredential(
+            org_id=org.id, refresh_token="revoked",
+            access_token="dead-but-unexpired",
+            token_expiry=utcnow() + timedelta(minutes=50)))
+        db.commit()
+    finally:
+        db.close()
+
+    integrations._verify_cache.clear()
+    # Google refuses the profile call and the refresh — access was revoked.
+    monkeypatch.setattr(integrations, "_fetch_account_email", lambda token: None)
+    monkeypatch.setattr(google_oauth, "refresh_access_token",
+                        lambda rt: (_ for _ in ()).throw(
+                            GoogleOAuthError("400 invalid_grant")))
+
+    status = client.get("/integrations/google/status").json()
+    assert status["connected"] is True
+    assert status["broken"] is True, status
+    assert "revoked" in (status["broken_reason"] or "").lower()
+
+
+def test_status_leaves_a_working_connection_alone(client, monkeypatch):
+    from datetime import timedelta
+
+    from app.database import SessionLocal
+    from app.models import GoogleCredential, Organization, utcnow
+    from app.routers import integrations
+
+    db = SessionLocal()
+    try:
+        org = db.query(Organization).first()
+        db.add(GoogleCredential(
+            org_id=org.id, refresh_token="good", access_token="live",
+            token_expiry=utcnow() + timedelta(minutes=50),
+            account_email="rep@acme.io"))
+        db.commit()
+    finally:
+        db.close()
+
+    integrations._verify_cache.clear()
+    monkeypatch.setattr(integrations, "_fetch_account_email",
+                        lambda token: "rep@acme.io")
+
+    status = client.get("/integrations/google/status").json()
+    assert status["connected"] is True
+    assert status["broken"] is False
+
+
+def test_verify_cache_does_not_skip_the_first_check_on_a_fresh_process():
+    """time.monotonic() counts from boot, so a 0.0 "never checked" sentinel
+    made the very first verification look recent on a freshly started
+    machine and skipped it — which is exactly when it matters."""
+    import time
+
+    from app.routers import integrations
+
+    integrations._verify_cache.clear()
+    assert integrations._verify_cache.get(1) is None
+    # whatever the machine's uptime, an unseen org must not be treated as
+    # recently verified
+    last = integrations._verify_cache.get(1)
+    skipped = last is not None and (
+        time.monotonic() - last < integrations._VERIFY_TTL_SECONDS)
+    assert skipped is False

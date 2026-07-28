@@ -59,6 +59,10 @@
       No active subscription — Julian is paused.
       <button class="btn small" onclick="ui.checkout()">Subscribe</button>
     </div>
+    <div id="google-banner" class="banner hidden">
+      <span id="google-banner-text"></span>
+      <button class="btn small" onclick="ui.googleConnect()">Reconnect Google</button>
+    </div>
     <div id="verify-banner" class="banner hidden">
       <form onsubmit="return ui.verifyEmail(event)" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0">
         <span>Confirm your email to start sending outreach.</span>

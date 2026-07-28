@@ -230,3 +230,99 @@ def test_state_machine_terminal_states_block_everything():
     lead = Lead(name="Y", state=LeadState.UNSUBSCRIBED)
     with pytest.raises(InvalidTransition):
         transition(lead, LeadState.ENGAGED)
+
+
+def test_revoked_google_is_detected_even_with_an_unexpired_token(client, monkeypatch):
+    """Revoking access in a Google account kills the access token instantly,
+    long before its recorded expiry. Julian used to see the resulting 401 as
+    an ordinary send failure: it retried, never marked the connection broken,
+    and never told the customer to reconnect."""
+    from datetime import timedelta
+
+    from app.adapters import google_oauth
+    from app.adapters.gmail import GmailSenderAdapter
+    from app.adapters.google_oauth import GoogleOAuthError
+    from app.database import SessionLocal
+    from app.models import GoogleCredential, Organization, utcnow
+    from app.services import sending
+
+    lead_id = _lead_with_sequence(client)
+    client.post(f"/leads/{lead_id}/activate_sequence")
+
+    db = SessionLocal()
+    try:
+        org = db.query(Organization).first()
+        db.add(GoogleCredential(
+            org_id=org.id, refresh_token="revoked",
+            access_token="dead-but-unexpired",
+            token_expiry=utcnow() + timedelta(minutes=50)))
+        db.commit()
+    finally:
+        db.close()
+
+    def gmail_401(request):
+        return httpx.Response(401, json={"error": {"message": "Invalid Credentials"}})
+
+    def refused(refresh_token):
+        raise GoogleOAuthError("400 invalid_grant")
+
+    monkeypatch.setattr(google_oauth, "refresh_access_token", refused)
+
+    db = SessionLocal()
+    try:
+        org = db.query(Organization).first()
+        credential = db.query(GoogleCredential).first()
+        sender = GmailSenderAdapter(
+            token_provider=lambda: google_oauth.get_valid_access_token(db, credential),
+            on_auth_error=lambda: google_oauth.get_valid_access_token(
+                db, credential, force_refresh=True),
+            client=httpx.Client(transport=httpx.MockTransport(gmail_401)))
+
+        result = sending.run_send_cycle(db, org, sender=sender)
+        db.refresh(credential)
+
+        assert result["sent"] == 0
+        assert credential.broken is True
+        assert credential.broken_notified is True
+        # not burned as a retry — the message is still queued for after they reconnect
+        message = db.query(OutreachMessage).filter_by(step=1).one()
+        assert message.send_attempts == 0
+        assert message.status == MessageStatus.APPROVED
+    finally:
+        db.close()
+
+
+def test_a_401_that_survives_refresh_stops_the_cycle(client, monkeypatch):
+    """If the token refreshes fine but Gmail still 401s, the connection is
+    unusable — stop rather than retrying it four times per message."""
+    from app.adapters.gmail import GmailAuthError
+    from app.database import SessionLocal
+    from app.models import GoogleCredential, Organization, utcnow
+    from app.services import sending
+
+    lead_id = _lead_with_sequence(client)
+    client.post(f"/leads/{lead_id}/activate_sequence")
+
+    db = SessionLocal()
+    try:
+        org = db.query(Organization).first()
+        db.add(GoogleCredential(org_id=org.id, refresh_token="r",
+                                access_token="a", token_expiry=utcnow()))
+        db.commit()
+    finally:
+        db.close()
+
+    class AlwaysUnauthorized:
+        def send(self, to, subject, body):
+            raise GmailAuthError("Gmail rejected the access token")
+
+    db = SessionLocal()
+    try:
+        org = db.query(Organization).first()
+        result = sending.run_send_cycle(db, org, sender=AlwaysUnauthorized())
+        credential = db.query(GoogleCredential).first()
+        assert result["sent"] == 0
+        assert credential.broken is True
+        assert any("auth rejected" in e for e in result["errors"])
+    finally:
+        db.close()
