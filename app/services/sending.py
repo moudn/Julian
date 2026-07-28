@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.adapters.calendar import safe_zone
 
 from app.adapters.email_sender import EmailSenderAdapter
-from app.adapters.gmail import GmailError, GmailSenderAdapter
+from app.adapters.gmail import GmailAuthError, GmailError, GmailSenderAdapter
 from app.adapters.google_oauth import get_valid_access_token
 from app.models import (
     GoogleCredential,
@@ -142,7 +142,13 @@ def get_outbound_sender(db: Session, org: Organization):
     )
     if credential is not None:
         return GmailSenderAdapter(
-            token_provider=lambda: get_valid_access_token(db, credential)
+            token_provider=lambda: get_valid_access_token(db, credential),
+            # On a 401, force a refresh: that's what distinguishes a revoked
+            # connection (raises GoogleAccessRevoked, marks it broken and
+            # tells the customer to reconnect) from a token that merely
+            # expired early.
+            on_auth_error=lambda: get_valid_access_token(
+                db, credential, force_refresh=True),
         )
     return EmailSenderAdapter()
 
@@ -212,6 +218,14 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
             _notify_google_broken(db, org)
             errors.append(f"google revoked mid-cycle: {exc}")
             break
+        except GmailAuthError as exc:
+            # A 401 survived the token refresh, so the connection is dead.
+            # Retrying it would just burn send attempts and the customer
+            # would never be told to reconnect.
+            _mark_google_broken(db, org, "Gmail rejected the access token")
+            _notify_google_broken(db, org)
+            errors.append(f"google auth rejected: {exc}")
+            break
         except (GmailError, OSError) as exc:
             message.send_attempts += 1
             message.last_error = str(exc)[:500]
@@ -253,6 +267,16 @@ def _retire_and_stop(db: Session, lead: Lead) -> None:
         step.status = MessageStatus.SKIPPED
     if lead.state == LeadState.SEQUENCE_ACTIVE:
         lead.state = LeadState.NOT_INTERESTED  # undeliverable == dead lead
+
+
+def _mark_google_broken(db: Session, org: Organization, reason: str) -> None:
+    """Flag the connection as unusable so the scheduler stops trying it."""
+    credential = db.scalar(select(GoogleCredential).where(
+        GoogleCredential.org_id == org.id))
+    if credential is not None and not credential.broken:
+        credential.broken = True
+        credential.broken_reason = reason
+        db.commit()
 
 
 def _notify_google_broken(db: Session, org: Organization) -> None:

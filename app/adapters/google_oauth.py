@@ -121,8 +121,13 @@ def refresh_access_token(refresh_token: str) -> dict:
     })
 
 
-def get_valid_access_token(db: Session, credential: GoogleCredential) -> str:
+def get_valid_access_token(db: Session, credential: GoogleCredential,
+                           force_refresh: bool = False) -> str:
     """Return a live access token, refreshing and persisting it if expired.
+
+    Pass force_refresh after Gmail rejects a token that still looked valid —
+    revoking access in a Google account kills the access token immediately,
+    well before its recorded expiry.
 
     Raises GoogleAccessRevoked (and marks the credential broken) when Google
     rejects the refresh token — the customer must reconnect.
@@ -131,7 +136,8 @@ def get_valid_access_token(db: Session, credential: GoogleCredential) -> str:
     expiry = credential.token_expiry
     if expiry is not None and expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=timezone.utc)
-    if credential.access_token and expiry and expiry > now + timedelta(minutes=2):
+    if (not force_refresh and credential.access_token
+            and expiry and expiry > now + timedelta(minutes=2)):
         return credential.access_token
 
     try:

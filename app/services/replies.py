@@ -520,7 +520,9 @@ def run_reply_cycle_all_orgs(db: Session) -> dict:
         if credential is None or credential.broken:
             continue
         reader = GmailReaderAdapter(
-            token_provider=lambda c=credential: get_valid_access_token(db, c))
+            token_provider=lambda c=credential: get_valid_access_token(db, c),
+            on_auth_error=lambda c=credential: get_valid_access_token(
+                db, c, force_refresh=True))
         try:
             result = poll_replies(db, org, reader)
         except GoogleAccessRevoked:

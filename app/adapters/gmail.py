@@ -18,30 +18,64 @@ class GmailError(Exception):
     pass
 
 
+class GmailAuthError(GmailError):
+    """Gmail rejected our token (401).
+
+    Distinct from a generic GmailError because it means the connection is
+    unusable, not that one send happened to fail — retrying with the same
+    token can only fail again.
+    """
+
+
 class GmailReaderAdapter:
     """Read inbound mail from the connected account (reply detection)."""
 
     def __init__(self, token_provider: Callable[[], str],
-                 client: httpx.Client | None = None):
+                 client: httpx.Client | None = None,
+                 on_auth_error: Callable[[], str] | None = None):
         self.token_provider = token_provider
+        # Called when Gmail 401s, to force a token refresh. Raises
+        # GoogleAccessRevoked if the connection is genuinely gone.
+        self.on_auth_error = on_auth_error
         self.base_url = get_settings().gmail_api_base.rstrip("/")
         self._client = client or httpx.Client(timeout=30)
 
     def _get(self, path: str, params: dict | None = None) -> dict:
-        try:
-            response = self._client.get(
+        response = self._request_with_auth_retry(
+            lambda token: self._client.get(
                 f"{self.base_url}{path}", params=params,
-                headers={"Authorization": f"Bearer {self.token_provider()}"},
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise GmailError(
-                f"Gmail API returned {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise GmailError(f"Gmail API request failed: {exc}") from exc
+                headers={"Authorization": f"Bearer {token}"}))
         return response.json()
+
+    def _request_with_auth_retry(self, send) -> httpx.Response:
+        """Issue a request, refreshing the token once on a 401.
+
+        A cached access token can be dead before it looks expired — most
+        obviously when the customer revokes access in their Google account.
+        Without this the 401 looked like an ordinary send failure and the
+        connection was never marked broken.
+        """
+        token = self.token_provider()
+        for attempt in (1, 2):
+            try:
+                response = send(token)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                if (exc.response.status_code == 401 and attempt == 1
+                        and self.on_auth_error is not None):
+                    token = self.on_auth_error()  # may raise GoogleAccessRevoked
+                    continue
+                if exc.response.status_code == 401:
+                    raise GmailAuthError(
+                        f"Gmail rejected the access token: "
+                        f"{exc.response.text[:300]}") from exc
+                raise GmailError(
+                    f"Gmail API returned {exc.response.status_code}: "
+                    f"{exc.response.text[:500]}") from exc
+            except httpx.HTTPError as exc:
+                raise GmailError(f"Gmail API request failed: {exc}") from exc
+        raise GmailError("Gmail request failed after retry")
 
     def list_message_ids(self, query: str, max_results: int = 20) -> list[str]:
         data = self._get("/users/me/messages",
@@ -101,8 +135,10 @@ def _b64url_decode(data: str) -> str:
 
 class GmailSenderAdapter:
     def __init__(self, token_provider: Callable[[], str],
-                 client: httpx.Client | None = None):
+                 client: httpx.Client | None = None,
+                 on_auth_error: Callable[[], str] | None = None):
         self.token_provider = token_provider
+        self.on_auth_error = on_auth_error
         self.base_url = get_settings().gmail_api_base.rstrip("/")
         self._client = client or httpx.Client(timeout=30)
         self.sent: list[dict[str, str]] = []  # local record for inspection
@@ -118,20 +154,11 @@ class GmailSenderAdapter:
         message.set_content(body)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
-        try:
-            response = self._client.post(
+        response = GmailReaderAdapter._request_with_auth_retry(
+            self, lambda token: self._client.post(
                 f"{self.base_url}/users/me/messages/send",
                 json={"raw": raw},
-                headers={"Authorization": f"Bearer {self.token_provider()}"},
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise GmailError(
-                f"Gmail API returned {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise GmailError(f"Gmail API request failed: {exc}") from exc
+                headers={"Authorization": f"Bearer {token}"}))
 
         self.sent.append({"to": to, "subject": subject, "body": body})
         result = response.json()

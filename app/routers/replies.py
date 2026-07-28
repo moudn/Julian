@@ -97,7 +97,9 @@ def poll(
         raise HTTPException(status_code=409,
                             detail="Google is not connected for this organization")
     reader = GmailReaderAdapter(
-        token_provider=lambda: get_valid_access_token(db, credential))
+        token_provider=lambda: get_valid_access_token(db, credential),
+        on_auth_error=lambda: get_valid_access_token(
+            db, credential, force_refresh=True))
     return PollOut(**poll_replies(db, org, reader, llm=llm, notifier=notifier))
 
 
