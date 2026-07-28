@@ -216,3 +216,21 @@ def test_status_leaves_a_working_connection_alone(client, monkeypatch):
     status = client.get("/integrations/google/status").json()
     assert status["connected"] is True
     assert status["broken"] is False
+
+
+def test_verify_cache_does_not_skip_the_first_check_on_a_fresh_process():
+    """time.monotonic() counts from boot, so a 0.0 "never checked" sentinel
+    made the very first verification look recent on a freshly started
+    machine and skipped it — which is exactly when it matters."""
+    import time
+
+    from app.routers import integrations
+
+    integrations._verify_cache.clear()
+    assert integrations._verify_cache.get(1) is None
+    # whatever the machine's uptime, an unseen org must not be treated as
+    # recently verified
+    last = integrations._verify_cache.get(1)
+    skipped = last is not None and (
+        time.monotonic() - last < integrations._VERIFY_TTL_SECONDS)
+    assert skipped is False

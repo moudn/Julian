@@ -116,8 +116,12 @@ def _verify_connection(db: Session, credential: GoogleCredential) -> None:
     """Ask Google whether the connection still works; mark it broken if not."""
     from app.adapters.google_oauth import GoogleAccessRevoked, get_valid_access_token
 
-    last = _verify_cache.get(credential.org_id, 0.0)
-    if credential.broken or time.monotonic() - last < _VERIFY_TTL_SECONDS:
+    # None, not 0.0, for "never checked": time.monotonic() is measured from
+    # boot, so a 0.0 sentinel makes the first check on a freshly started
+    # machine look recent and skip verification for the first minute.
+    last = _verify_cache.get(credential.org_id)
+    if credential.broken or (last is not None
+                             and time.monotonic() - last < _VERIFY_TTL_SECONDS):
         return
     _verify_cache[credential.org_id] = time.monotonic()
     try:
