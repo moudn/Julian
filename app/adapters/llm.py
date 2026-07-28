@@ -377,7 +377,14 @@ class OpenRouterAdapter:
         except (httpx.HTTPError, KeyError, IndexError, LLMError):
             # Classification must never break ingestion; escalate instead
             return {"category": "COMPLEX", "wants_meeting": False,
-                    "suggested_reply": "", "answer": ""}
+                    "suggested_reply": _fallback_complex_reply(lead, org),
+                    "answer": ""}
+        if data["category"] == "COMPLEX" and not data["suggested_reply"]:
+            # The prompt asks the model to always draft something for
+            # COMPLEX, but nothing enforces that — and a blank draft hides
+            # the suggested-reply affordance in the dashboard entirely
+            # (see _heuristic_classify for the same guarantee offline).
+            data["suggested_reply"] = _fallback_complex_reply(lead, org)
         return data
 
     def compose_interest_reply(self, lead: Lead, org: Organization,
@@ -451,8 +458,17 @@ class OpenRouterAdapter:
                 ),
                 "answer": "",
             }
-        return {"category": "COMPLEX", "wants_meeting": False,
-                "suggested_reply": "", "answer": ""}
+        return {
+            "category": "COMPLEX", "wants_meeting": False,
+            # Never blank: the product promise for COMPLEX is "the rep gets
+            # the thread plus a suggested draft" (see module docstring). An
+            # empty string here isn't just an unhelpful draft — the
+            # dashboard's suggested-reply toggle only renders when this
+            # field is truthy, so a blank one hides the affordance
+            # entirely and the rep sees nothing to work from.
+            "suggested_reply": _fallback_complex_reply(lead, org),
+            "answer": "",
+        }
 
     # ---------- internals ----------
 
@@ -567,6 +583,17 @@ def _parse_draft(content: str) -> dict:
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
     raise LLMError("LLM response was not valid draft JSON")
+
+
+def _fallback_complex_reply(lead: Lead, org: Organization) -> str:
+    """Generic, non-committal draft used whenever COMPLEX has no real
+    suggested_reply — deliberately says nothing about whatever the prospect
+    asked for, since this fires precisely when Julian has nothing safe to
+    say (including when the prospect's message was a prompt injection
+    attempt)."""
+    first = lead.name.split()[0] if lead.name else "there"
+    return (f"Hi {first},\n\nThanks for the note — let me take a proper "
+            f"look and get back to you shortly.\n\n{_signer_name(org)}")
 
 
 def _signer_name(org: Organization) -> str:
