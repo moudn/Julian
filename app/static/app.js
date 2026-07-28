@@ -625,6 +625,21 @@ routes.settings = async () => {
 };
 
 /* ---------- boot ---------- */
+async function refreshGoogleBanner() {
+  // A revoked Google connection silently stops all outreach, so it needs to
+  // be visible from every page — not only from Settings.
+  try {
+    const google = await api("/integrations/google/status");
+    const broken = google.connected && google.broken;
+    $("#google-banner").classList.toggle("hidden", !broken);
+    if (broken) {
+      $("#google-banner-text").textContent =
+        `Julian can't reach your Google account (${google.broken_reason
+          || "access was revoked or expired"}) — sending and scheduling are paused.`;
+    }
+  } catch (e) { /* auth/billing handled elsewhere */ }
+}
+
 async function refreshApprovalsBadge() {
   try {
     const bookings = await api("/bookings/pending");
@@ -652,6 +667,7 @@ function userIsBusy() {
 function autoRefresh() {
   if (document.hidden || userIsBusy()) return;
   if (!localStorage.getItem("julian_key")) return;
+  refreshGoogleBanner();
   route();
 }
 
@@ -666,6 +682,7 @@ async function boot() {
   showBanner(false);
   $("#verify-banner").classList.toggle("hidden", ORG.email_verified !== false);
   try { await api("/leads"); } catch (e) { /* 402 shows banner */ }
+  refreshGoogleBanner();
   route();
 
   if (!boot._refreshing) {
