@@ -356,6 +356,10 @@ class OpenRouterAdapter:
                     "suggested_reply": "", "answer": ""}
 
         if not self.api_key:
+            logger.info(
+                "classify_reply: no OPENROUTER_API_KEY configured, using "
+                "heuristic classifier for lead %s", lead.id,
+            )
             return self._heuristic_classify(lead, org, lowered)
 
         context = "\n\n".join(filter(None, [

@@ -72,6 +72,12 @@ async def lifespan(app: FastAPI):
     _init_sentry()
     init_db()
     settings = get_settings()
+    logger.info(
+        "OpenRouter API key: %s",
+        "configured" if settings.openrouter_api_key else "NOT SET — "
+        "Julian will use deterministic templates/heuristics instead of "
+        "a real LLM for drafting and reply classification",
+    )
     task = None
     if settings.scheduler_enabled:
         task = asyncio.create_task(_agent_loop(settings.scheduler_interval_seconds))
