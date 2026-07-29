@@ -152,6 +152,36 @@ def test_regenerate_replaces_drafts_not_duplicates(client):
     assert len(sequence["messages"]) == 4
 
 
+def test_regenerating_tells_the_model_what_it_wrote_last_time(client):
+    """Regression: regenerate deleted the old drafts before generating new
+    ones, so the model calling itself again had zero signal this was a
+    repeat request — nothing stopped it reproducing a near-duplicate."""
+    from app.deps import get_llm_adapter
+    from app.main import app
+
+    captured_prompts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_prompts.append(body["messages"][-1]["content"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(
+            {"subject": "Quick one", "body": "Draft text. Julian"})}}]})
+
+    adapter = OpenRouterAdapter(
+        api_key="test-key", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    app.dependency_overrides[get_llm_adapter] = lambda: adapter
+
+    lead_id = _scored_lead(client)
+    client.post(f"/leads/{lead_id}/generate_sequence")
+    step_1_prompts_before = len(captured_prompts)
+    assert not any("REGENERATION" in p for p in captured_prompts)
+
+    client.post(f"/leads/{lead_id}/generate_sequence")  # regenerate
+    step_1_regen_prompt = captured_prompts[step_1_prompts_before]
+    assert "REGENERATION" in step_1_regen_prompt
+    assert "Draft text." in step_1_regen_prompt  # the previous body was included
+
+
 def test_product_description_flows_into_drafts(client):
     client.patch("/auth/org", json={
         "product_description": "We build payroll software for restaurants",

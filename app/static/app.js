@@ -4,6 +4,42 @@
 const API = "";
 let ORG = null;
 
+// Tracks lead state across refresh ticks so a lead going NOT_INTERESTED or
+// UNSUBSCRIBED in the background — Julian's own doing, not a user action —
+// gets a visible notification instead of only showing up on the next time
+// someone happens to look at that lead. null until the first tick seeds a
+// baseline, so pre-existing lost leads don't all toast on page load.
+let previousLeadStates = null;
+let justLostIds = new Set();
+// Same idea for individual sequence steps flipping to SENT, keyed by
+// "<leadId>-<step>" so the lead detail page can flash the one that just went.
+let previousSequenceStatus = {};
+
+async function checkForStateChanges() {
+  if (!localStorage.getItem("julian_key")) return;
+  let leads;
+  try { leads = await api("/leads"); } catch (e) { return; }
+  const seeding = previousLeadStates === null;
+  const prev = previousLeadStates || {};
+  const next = {};
+  const newlyLost = [];
+  for (const l of leads) {
+    next[l.id] = l.state;
+    if (!seeding && prev[l.id] && prev[l.id] !== l.state
+        && (l.state === "NOT_INTERESTED" || l.state === "UNSUBSCRIBED")) {
+      newlyLost.push(l);
+    }
+  }
+  previousLeadStates = next;
+  justLostIds = new Set(newlyLost.map((l) => l.id));
+  if (newlyLost.length === 1) {
+    const l = newlyLost[0];
+    toast(`${esc(l.name)} ${l.state === "UNSUBSCRIBED" ? "unsubscribed" : "isn't interested"} — sequence stopped.`, true);
+  } else if (newlyLost.length > 1) {
+    toast(`${newlyLost.length} leads just went not-interested or unsubscribed.`, true);
+  }
+}
+
 /* ---------- api helper ---------- */
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -72,10 +108,32 @@ const badge = (state) =>
 /* ---------- router ---------- */
 const routes = {};
 function route() {
-  const hash = location.hash || "#/dashboard";
-  const [, name, arg] = hash.split("/");
+  const raw = (location.hash || "#/dashboard").slice(1);
+  const [pathPart, queryString] = raw.split("?");
+  const segments = pathPart.split("/");
+  const name = segments[1];
+  const arg = segments[2];
   document.querySelectorAll("[data-nav]").forEach((a) =>
     a.classList.toggle("active", a.dataset.nav === name));
+
+  // One-shot flags a redirect (email verify link, Google OAuth callback)
+  // lands us with — show the confirmation immediately, then strip the
+  // flag so it doesn't re-fire on a later refresh or back-navigation.
+  if (queryString) {
+    const params = new URLSearchParams(queryString);
+    if (params.get("verified") === "1") {
+      toast("Email verified — you're all set.");
+      api("/auth/me").then((org) => { ORG = org; }).catch(() => {});
+    } else if (params.get("verified") === "expired") {
+      toast("That verification link has expired or was already used — "
+            + "use \"Resend email\" for a new one.", true);
+    }
+    if (params.get("google") === "connected") {
+      toast("Google connected — Julian can send and check your calendar.");
+    }
+    history.replaceState(null, "", "#/" + segments.slice(1).join("/"));
+  }
+
   (routes[name] || routes.dashboard)(arg).catch((e) => {
     oops(e);
     // A toast alone left a blank or stale page with no explanation of why
@@ -107,13 +165,34 @@ const ui = {
     } catch (e) { $("#auth-error").textContent = e.message; $("#auth-error").classList.remove("hidden"); }
     return false;
   },
+  passwordStrengthOk(password) {
+    return password.length >= 8 && /[A-Z]/.test(password)
+      && /[a-z]/.test(password) && /[0-9]/.test(password);
+  },
+  checkPasswordStrength() {
+    const ok = ui.passwordStrengthOk($("#signup-password").value);
+    $("#password-hint").classList.toggle("error", !ok && $("#signup-password").value.length > 0);
+  },
+  checkFooterCompliance(value) {
+    $("#footer-checklist").innerHTML = footerChecklistHtml(value);
+  },
+  checkPasswordsMatch() {
+    const mismatch = $("#signup-password-confirm").value.length > 0
+      && $("#signup-password").value !== $("#signup-password-confirm").value;
+    $("#password-match-hint").classList.toggle("hidden", !mismatch);
+  },
   async signup(event) {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target));
+    if (data.password !== data.password_confirm) {
+      $("#password-match-hint").classList.remove("hidden");
+      return false;
+    }
+    delete data.password_confirm;
     try {
       const result = await api("/auth/signup", { method: "POST", json: data });
       localStorage.setItem("julian_key", result.api_key);
-      toast("Account created — your API key is stored in this browser.");
+      toast("Account created — check your email to verify, but you're all set to explore.");
       boot();
     } catch (e) { $("#auth-error").textContent = e.message; $("#auth-error").classList.remove("hidden"); }
     return false;
@@ -151,8 +230,12 @@ const ui = {
 
   async uploadCsv(input) {
     if (!input.files.length) return;
+    await ui.importCsvFile(input.files[0]);
+    input.value = "";
+  },
+  async importCsvFile(file) {
     const body = new FormData();
-    body.append("file", input.files[0]);
+    body.append("file", file);
     try {
       const result = await api("/leads/import", { method: "POST", body });
       // The API says exactly why each row was skipped; showing only the
@@ -165,7 +248,6 @@ const ui = {
             result.imported === 0 && result.skipped > 0);
       route();
     } catch (e) { oops(e); }
-    input.value = "";
   },
   async scoreAll() {
     try {
@@ -174,13 +256,22 @@ const ui = {
       route();
     } catch (e) { oops(e); }
   },
-  async leadAction(id, action, confirmText) {
+  async leadAction(event, id, action, confirmText) {
     if (confirmText && !confirm(confirmText)) return;
+    const button = event?.currentTarget;
+    const originalHtml = button?.innerHTML;
+    if (button) {
+      button.classList.add("busy");
+      button.innerHTML = `<span class="spinner-inline"></span>${esc(button.dataset.busyLabel || "Working…")}`;
+    }
     try {
       await api(`/leads/${id}/${action}`, { method: "POST" });
       toast("Done.");
       route();
-    } catch (e) { oops(e); }
+    } catch (e) {
+      oops(e);
+      if (button) { button.classList.remove("busy"); button.innerHTML = originalHtml; }
+    }
   },
   async booking(id, action) {
     try {
@@ -194,13 +285,20 @@ const ui = {
     event.preventDefault();
     const body = new FormData(event.target).get("body");
     if (!body.trim()) return false;
+    const thread = $(".thread");
+    const typing = document.createElement("div");
+    typing.className = "msg OUTBOUND";
+    typing.innerHTML = `<div class="meta">Julian</div>
+      <div class="typing-dots"><span></span><span></span><span></span></div>`;
+    thread?.appendChild(typing);
+    typing.scrollIntoView({ block: "nearest" });
     try {
       const result = await api("/replies/ingest", {
         method: "POST", json: { lead_id: Number(leadId), body },
       });
       toast(`Julian triaged it as ${result.category}.`);
       route();
-    } catch (e) { oops(e); }
+    } catch (e) { oops(e); typing.remove(); }
     return false;
   },
   async saveSettings(event) {
@@ -268,6 +366,13 @@ const ui = {
       route();
     } catch (e) { oops(e); }
   },
+  toggleExpandConversation() {
+    const card = $("#conversation-card");
+    const button = card.querySelector("button");
+    const expanding = !card.classList.contains("expanded");
+    card.classList.toggle("expanded", expanding);
+    button.textContent = expanding ? "Collapse" : "Expand";
+  },
   async googleDisconnect() {
     if (!confirm("Disconnect Google Calendar & Gmail?")) return;
     try { await api("/integrations/google", { method: "DELETE" }); route(); }
@@ -311,11 +416,15 @@ routes.leads = async (id) => {
           <input type="file" accept=".csv" class="hidden" onchange="ui.uploadCsv(this)">
         </label>
       </div></div>
+    <div id="csv-dropzone" class="dropzone" style="margin-bottom:16px">
+      Drag a CSV here to import it
+    </div>
     <div class="card">
       ${leads.length ? `<table>
         <tr><th>Name</th><th>Company</th><th>Title</th><th>Score</th><th>Status</th></tr>
         ${leads.map((l) => `
-          <tr class="click" onclick="location.hash='#/leads/${l.id}'">
+          <tr class="click ${justLostIds.has(l.id) ? "just-lost" : ""}"
+            onclick="location.hash='#/leads/${l.id}'">
             <td><strong>${esc(l.name)}</strong><div class="muted small">${esc(l.email || "")}</div></td>
             <td>${esc(l.company || "—")}</td>
             <td>${esc(l.title || "—")}</td>
@@ -325,16 +434,37 @@ routes.leads = async (id) => {
       </table>` : `<div class="empty">No leads yet. Import a CSV with columns like
         <code>name,email,company,title,company_size</code>.</div>`}
     </div>`;
+  justLostIds.clear();
+  wireCsvDropzone();
 };
+
+function wireCsvDropzone() {
+  const zone = $("#csv-dropzone");
+  if (!zone) return;
+  ["dragenter", "dragover"].forEach((evt) => zone.addEventListener(evt, (e) => {
+    e.preventDefault(); zone.classList.add("drag-over");
+  }));
+  ["dragleave", "drop"].forEach((evt) => zone.addEventListener(evt, (e) => {
+    e.preventDefault(); zone.classList.remove("drag-over");
+  }));
+  zone.addEventListener("drop", (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file) ui.importCsvFile(file);
+  });
+}
 
 async function leadDetail(id) {
   const [lead, sequence, conversation] = await Promise.all([
     api(`/leads/${id}`), api(`/leads/${id}/sequence`),
     api(`/leads/${id}/conversation`),
   ]);
+  const BUSY_LABELS = {
+    score: "Scoring…", generate_sequence: "Generating…", research: "Researching…",
+    activate_sequence: "Activating…", propose_meeting: "Proposing…",
+  };
   const act = (label, action, primary = false, confirmText = "") => `
-    <button class="btn ${primary ? "primary" : ""}"
-      onclick="ui.leadAction(${id}, '${action}', '${confirmText}')">${label}</button>`;
+    <button class="btn ${primary ? "primary" : ""}" data-busy-label="${BUSY_LABELS[action] || "Working…"}"
+      onclick="ui.leadAction(event, ${id}, '${action}', '${confirmText}')">${label}</button>`;
   const actions = [];
   if (lead.state === "NEW") actions.push(act("Score against ICP", "score", true));
   if (lead.state === "SCORED") {
@@ -380,19 +510,29 @@ async function leadDetail(id) {
           : `<div class="muted small">Not yet researched. Julian researches automatically when you generate a sequence (if enabled in Settings).</div>`}
         </div>
         <div class="card"><h2>Sequence</h2>
-          ${sequence.messages.length ? sequence.messages.map((m) => `
-            <details class="step"><summary>
+          ${sequence.messages.length ? sequence.messages.map((m) => {
+            const key = `${id}-${m.step}`;
+            const justSent = previousSequenceStatus[key]
+              && previousSequenceStatus[key] !== "SENT" && m.status === "SENT";
+            previousSequenceStatus[key] = m.status;
+            return `
+            <details class="step ${justSent ? "just-sent" : ""}"><summary>
               <span><strong>Step ${m.step}</strong>
                 <span class="muted small">day ${m.send_after_days} — ${esc(m.subject)}</span></span>
               <span class="chip ${m.status}">${m.status}</span></summary>
               <pre>${esc(m.body)}</pre>
               ${m.spam_flags ? `<p class="error small">Spam flags: ${esc(m.spam_flags.join(", "))}</p>` : ""}
-            </details>`).join("")
+            </details>`;
+          }).join("")
           : `<div class="empty">No sequence yet.</div>`}
         </div>
       </div>
       <div>
-        <div class="card"><h2>Conversation</h2>
+        <div class="card" id="conversation-card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <h2 style="margin:0">Conversation</h2>
+            <button class="btn small" onclick="ui.toggleExpandConversation()">Expand</button>
+          </div>
           <div class="thread">
             ${conversation.length ? conversation.map((m) => `
               <div class="msg ${m.direction}">
@@ -516,6 +656,23 @@ routes.approvals = async () => {
   refreshApprovalsBadge();
 };
 
+const FOOTER_OPTOUT_PHRASES = [
+  "unsubscribe", "opt out", "opt-out", "no thanks", "stop emailing",
+  "stop contacting", "remove me", "reply stop", "to opt out", "to stop",
+];
+// Mirrors the backend's heuristic (app/services/sending.py) so the customer
+// sees the same verdict while typing that would otherwise only surface as a
+// 409 at activation time.
+function footerChecklistHtml(footer) {
+  const lowered = footer.toLowerCase();
+  const hasOptOut = FOOTER_OPTOUT_PHRASES.some((p) => lowered.includes(p));
+  const hasAddress = /\d/.test(footer);
+  const row = (ok, label) => `<span style="color:var(${ok ? "--s-green" : "--s-red"})">
+    ${ok ? "✓" : "✗"}</span> ${label}`;
+  return `${row(hasOptOut, "opt-out instruction")} &nbsp; `
+       + `${row(hasAddress, "postal address")}`;
+}
+
 routes.settings = async () => {
   ORG = ORG || await api("/auth/me");
   const [google, billing, rules, suppressions] = await Promise.all([
@@ -540,7 +697,9 @@ routes.settings = async () => {
               <textarea name="knowledge_base" placeholder="Pricing: ... Integrations: ... Onboarding: ...">${esc(ORG.knowledge_base || "")}</textarea></label>
             <label>Email footer — must include an opt-out line and your postal address
               (required by anti-spam law before Julian can send)
-              <textarea name="email_footer" placeholder='--\nAcme Inc, 1 Main St, Springfield.\nIf you&#39;d rather not hear from me, just reply "no thanks".'>${esc(ORG.email_footer || "")}</textarea></label>
+              <textarea name="email_footer" oninput="ui.checkFooterCompliance(this.value)"
+                placeholder='--\nAcme Inc, 1 Main St, Springfield.\nIf you&#39;d rather not hear from me, just reply "no thanks".'>${esc(ORG.email_footer || "")}</textarea></label>
+            <p id="footer-checklist" class="muted small">${footerChecklistHtml(ORG.email_footer || "")}</p>
             <label>Timezone (IANA name — sending hours &amp; meeting slots use this)
               <input name="timezone" value="${esc(ORG.timezone || "UTC")}" placeholder="Europe/London"></label>
             <label><input type="checkbox" name="research_enabled" style="width:auto"
@@ -664,10 +823,11 @@ function userIsBusy() {
   return !window.getSelection().isCollapsed;
 }
 
-function autoRefresh() {
+async function autoRefresh() {
   if (document.hidden || userIsBusy()) return;
   if (!localStorage.getItem("julian_key")) return;
   refreshGoogleBanner();
+  await checkForStateChanges();
   route();
 }
 
@@ -683,6 +843,7 @@ async function boot() {
   $("#verify-banner").classList.toggle("hidden", ORG.email_verified !== false);
   try { await api("/leads"); } catch (e) { /* 402 shows banner */ }
   refreshGoogleBanner();
+  await checkForStateChanges();  // seeds the baseline; no toast on first load
   route();
 
   if (!boot._refreshing) {

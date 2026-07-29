@@ -3,6 +3,7 @@ import time
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ from app.adapters.google_oauth import (
     exchange_code,
 )
 from app.auth import get_current_org
+from app.config import get_settings
 from app.database import get_db
 from app.models import GoogleCredential, Organization, utcnow
 
@@ -81,9 +83,17 @@ def callback(code: str, state: str, db: Session = Depends(get_db)):
     credential.token_expiry = utcnow() + timedelta(
         seconds=int(tokens.get("expires_in", 3600)))
     credential.account_email = _fetch_account_email(credential.access_token)
+    credential.broken = False
+    credential.broken_reason = None
+    credential.broken_notified = False
     db.commit()
+    _verify_cache.pop(org_id, None)  # re-check on the next status call
 
-    return {"status": "connected", "message": "Google Calendar is now connected."}
+    # Land the user back in the dashboard rather than on raw JSON. The
+    # query flag lets the UI confirm the connection without a manual reload.
+    base = get_settings().app_base_url.rstrip("/")
+    return RedirectResponse(url=f"{base}/app/#/settings?google=connected",
+                            status_code=303)
 
 
 def _fetch_account_email(access_token: str | None) -> str | None:
@@ -92,7 +102,6 @@ def _fetch_account_email(access_token: str | None) -> str | None:
         return None
     import httpx
 
-    from app.config import get_settings
     try:
         response = httpx.get(
             f"{get_settings().gmail_api_base.rstrip('/')}/users/me/profile",

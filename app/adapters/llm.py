@@ -257,12 +257,20 @@ class OpenRouterAdapter:
     # ---------- public API ----------
 
     def generate_step(self, lead: Lead, org: Organization, step: int,
-                      prior_bodies: list[str] | None = None) -> dict:
-        """Generate one sequence step. Returns {subject, body, spam_flags}."""
+                      prior_bodies: list[str] | None = None,
+                      previous_attempt: str | None = None) -> dict:
+        """Generate one sequence step. Returns {subject, body, spam_flags}.
+
+        previous_attempt is the body from the last time this exact step was
+        generated for this lead (regeneration deletes the old draft before
+        calling this, so without it the model has no idea it's redoing work
+        and nothing stops it producing a near-duplicate).
+        """
         if not self.api_key:
             draft = _template_step(lead, org, step)
         else:
-            draft = self._generate_via_api(lead, org, step, prior_bodies or [])
+            draft = self._generate_via_api(lead, org, step, prior_bodies or [],
+                                           previous_attempt=previous_attempt)
             text = draft["subject"] + " " + draft["body"]
             spam = lint_spam_phrases(text)
             cliches = lint_cliches(text)
@@ -277,6 +285,7 @@ class OpenRouterAdapter:
                         f"mass-mailed: {', '.join(cliches)}")
                 draft = self._generate_via_api(
                     lead, org, step, prior_bodies or [],
+                    previous_attempt=previous_attempt,
                     correction=("Your previous draft contained "
                                 + "; and ".join(problems)
                                 + ". Rewrite it without them. Keep the same "
@@ -473,7 +482,8 @@ class OpenRouterAdapter:
     # ---------- internals ----------
 
     def _generate_via_api(self, lead: Lead, org: Organization, step: int,
-                          prior_bodies: list[str], correction: str = "") -> dict:
+                          prior_bodies: list[str], correction: str = "",
+                          previous_attempt: str | None = None) -> dict:
         signer = _signer_name(org)
         sender_line = (
             f"Sender: {signer}, a sales rep at {org.name}. "
@@ -505,12 +515,24 @@ class OpenRouterAdapter:
             prior += "angle or wording):\n"
             prior += "\n---\n".join(prior_bodies)
 
+        redo = ""
+        if previous_attempt:
+            redo = (
+                "This is a REGENERATION — you already wrote this exact "
+                "step once and the sender wants a genuinely different "
+                "version, not a light edit. Change the opening line, the "
+                "angle on the problem, and the specific phrasing throughout. "
+                "Your previous attempt (do not reuse its sentences or "
+                "structure):\n" + previous_attempt
+            )
+
         user_prompt = "\n\n".join(filter(None, [
             f"Write sequence email #{step}. {STEP_GUIDANCE[step]}",
             sender_line,
             recipient_line,
             research_line,
             prior,
+            redo,
             correction,
         ]))
 
@@ -525,6 +547,10 @@ class OpenRouterAdapter:
                         {"role": "user", "content": user_prompt},
                     ],
                     "max_tokens": 500,
+                    # A bit higher than the provider default specifically
+                    # when regenerating, so a repeat request doesn't land
+                    # near-identical to the first draft by chance.
+                    "temperature": 0.95 if previous_attempt else 0.8,
                 },
             )
             response.raise_for_status()

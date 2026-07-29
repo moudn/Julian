@@ -83,9 +83,12 @@ def test_callback_stores_credential_and_status_reports_connected(client, monkeyp
     assert client.get("/integrations/google/status").json()["connected"] is False
 
     response = client.get("/integrations/google/callback",
-                          params={"code": "auth-code", "state": _mint_state(org_id)})
-    assert response.status_code == 200, response.text
-    assert response.json()["status"] == "connected"
+                          params={"code": "auth-code", "state": _mint_state(org_id)},
+                          follow_redirects=False)
+    # Lands the user back in the dashboard instead of raw JSON, with a flag
+    # the frontend reads to confirm the connection without a manual reload.
+    assert response.status_code == 303
+    assert response.headers["location"].endswith("/app/#/settings?google=connected")
 
     status = client.get("/integrations/google/status").json()
     assert status["connected"] is True

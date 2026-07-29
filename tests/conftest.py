@@ -43,7 +43,7 @@ def signup(client: TestClient, org_name="Acme Sales", email="owner@acme-sales.io
         "organization_name": org_name,
         "name": "Owner",
         "email": email,
-        "password": "s3cretpass!",
+        "password": "S3cretpass!",
     })
     assert response.status_code == 201, response.text
     api_key = response.json()["api_key"]

@@ -30,7 +30,13 @@
       <label>Company name<input type="text" name="organization_name" required></label>
       <label>Your name<input type="text" name="name" required></label>
       <label>Email<input type="email" name="email" required></label>
-      <label>Password<input type="password" name="password" minlength="8" required></label>
+      <label>Password<input type="password" name="password" id="signup-password"
+        minlength="8" required oninput="ui.checkPasswordStrength()"></label>
+      <p id="password-hint" class="muted small">
+        At least 8 characters, with an uppercase letter, a lowercase letter, and a number.</p>
+      <label>Retype password<input type="password" name="password_confirm"
+        id="signup-password-confirm" required oninput="ui.checkPasswordsMatch()"></label>
+      <p id="password-match-hint" class="error small hidden">Passwords don't match.</p>
       <button class="btn primary full" type="submit">Create account</button>
     </form>
     <p id="auth-error" class="error hidden"></p>
