@@ -143,10 +143,17 @@ def delete_lead(
 @router.post("/{lead_id}/score", response_model=ScoreResult)
 def score(
     lead_id: int,
+    force: bool = False,
     db: Session = Depends(get_db),
     org: Organization = Depends(get_current_org),
 ):
-    lead = score_lead(db, _get_lead(db, lead_id, org), org)
+    """Score a lead against the org's ICP rules.
+
+    `force=true` advances the lead to SCORED even if it falls below the
+    org's score_threshold — used when a rep wants to manually pursue a
+    lead the automatic rules would otherwise leave stuck in NEW.
+    """
+    lead = score_lead(db, _get_lead(db, lead_id, org), org, force=force)
     return ScoreResult(lead_id=lead.id, score=lead.score,
                        threshold=org.score_threshold, state=lead.state)
 
@@ -220,6 +227,34 @@ def generate_outreach_sequence(
     (day 12). Regenerating replaces unsent drafts only.
     """
     lead = _get_lead(db, lead_id, org)
+    try:
+        messages = generate_sequence(db, lead, org, llm, researcher)
+    except OutreachError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return SequenceOut(
+        lead_id=lead.id, state=lead.state,
+        messages=[OutreachMessageOut.model_validate(m) for m in messages],
+    )
+
+
+@router.post("/{lead_id}/force_generate_sequence", response_model=SequenceOut)
+def force_generate_outreach_sequence(
+    lead_id: int,
+    db: Session = Depends(get_db),
+    org: Organization = Depends(get_current_org),
+    llm: OpenRouterAdapter = Depends(get_llm_adapter),
+    researcher=Depends(get_researcher),
+):
+    """Manual override for a lead stuck in NEW below the ICP threshold.
+
+    Advances the lead to SCORED regardless of score, then generates its
+    sequence — for a rep who wants to pursue a specific lead the automatic
+    rules would otherwise leave with no path forward.
+    """
+    lead = _get_lead(db, lead_id, org)
+    score_lead(db, lead, org, force=True)
     try:
         messages = generate_sequence(db, lead, org, llm, researcher)
     except OutreachError as exc:

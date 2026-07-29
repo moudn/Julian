@@ -461,12 +461,21 @@ async function leadDetail(id) {
   const BUSY_LABELS = {
     score: "Scoring…", generate_sequence: "Generating…", research: "Researching…",
     activate_sequence: "Activating…", propose_meeting: "Proposing…",
+    force_generate_sequence: "Generating…",
   };
   const act = (label, action, primary = false, confirmText = "") => `
     <button class="btn ${primary ? "primary" : ""}" data-busy-label="${BUSY_LABELS[action] || "Working…"}"
       onclick="ui.leadAction(event, ${id}, '${action}', '${confirmText}')">${label}</button>`;
+  const belowThreshold = lead.state === "NEW" && lead.score !== null
+    && ORG && lead.score < ORG.score_threshold;
   const actions = [];
-  if (lead.state === "NEW") actions.push(act("Score against ICP", "score", true));
+  if (lead.state === "NEW") {
+    actions.push(act(lead.score === null ? "Score against ICP" : "Re-score", "score", true));
+  }
+  if (belowThreshold) {
+    actions.push(act("Generate sequence anyway", "force_generate_sequence", false,
+      "This lead scored below your ICP threshold. Generate an outreach sequence anyway?"));
+  }
   if (lead.state === "SCORED") {
     actions.push(act("Generate sequence", "generate_sequence", true));
     actions.push(act("Research now", "research"));
@@ -499,6 +508,9 @@ async function leadDetail(id) {
             <dt>Source</dt><dd>${esc(lead.source)}</dd>
             ${lead.proposed_slots ? `<dt>Offered</dt><dd>${lead.proposed_slots.map(fmtDate).map(esc).join("<br>")}</dd>` : ""}
           </dl>
+          ${belowThreshold ? `<p class="muted small">Scored ${lead.score} — below your
+            ICP threshold of ${ORG.score_threshold}, so Julian didn't move it forward
+            automatically. You can still pursue it manually.</p>` : ""}
           <div class="actions">${actions.join("")}</div>
         </div>
         <div class="card"><h2>Research</h2>

@@ -38,13 +38,13 @@ def _rule_matches(rule: ICPRule, lead: Lead) -> bool:
     return False
 
 
-def score_lead(db: Session, lead: Lead, org: Organization) -> Lead:
+def score_lead(db: Session, lead: Lead, org: Organization, force: bool = False) -> Lead:
     rules = db.scalars(select(ICPRule).where(
         ICPRule.active.is_(True), ICPRule.org_id == org.id)).all()
     lead.score = sum(rule.weight for rule in rules if _rule_matches(rule, lead))
 
     threshold = org.score_threshold
-    if lead.state == LeadState.NEW and lead.score >= threshold:
+    if lead.state == LeadState.NEW and (lead.score >= threshold or force):
         transition(lead, LeadState.SCORED)
 
     db.add(lead)

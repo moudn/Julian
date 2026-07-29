@@ -144,6 +144,25 @@ def test_sequence_requires_scored_state(client):
     assert response.status_code == 409
 
 
+def test_force_generate_sequence_overrides_below_threshold_lead(client):
+    """A lead that never clears the ICP threshold is stuck in NEW forever
+    with no path forward. The override lets a rep pursue it anyway."""
+    client.post("/leads/import",
+                files={"file": ("l.csv", io.BytesIO(CSV.encode()), "text/csv")})
+    scored = client.post("/leads/1/score").json()
+    assert scored["score"] == 0
+    assert scored["state"] == "NEW"
+
+    response = client.post("/leads/1/force_generate_sequence")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "OUTREACH_PENDING"
+    assert len(body["messages"]) == 4
+
+    lead = client.get("/leads/1").json()
+    assert lead["state"] == "OUTREACH_PENDING"
+
+
 def test_regenerate_replaces_drafts_not_duplicates(client):
     lead_id = _scored_lead(client)
     client.post(f"/leads/{lead_id}/generate_sequence")
