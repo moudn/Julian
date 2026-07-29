@@ -65,7 +65,7 @@ def test_ssrf_guard_is_reapplied_on_every_redirect_hop(monkeypatch):
 
     assert not any("169.254.169.254" in url for url in requested), \
         "followed a redirect into the metadata service"
-    assert result is None
+    assert result == []
 
 
 def test_ordinary_redirects_are_still_followed(monkeypatch):
@@ -84,7 +84,9 @@ def test_ordinary_redirects_are_still_followed(monkeypatch):
         company = "Acme"
         id = 1
 
-    text, url = _researcher(handler)._fetch_website(Lead())
+    result = _researcher(handler)._fetch_website(Lead())
+    assert len(result) == 1
+    _, text, url = result[0]
     assert "Acme builds robots." in text
     assert url == "https://www.acme.io/"
 
@@ -106,8 +108,56 @@ def test_redirect_loop_is_bounded(monkeypatch):
         company = "Acme"
         id = 1
 
-    assert _researcher(handler)._fetch_website(Lead()) is None
+    assert _researcher(handler)._fetch_website(Lead()) == []
     assert len(hops) <= research_mod.MAX_REDIRECTS + 1
+
+
+def test_fetches_about_page_linked_from_homepage(monkeypatch):
+    """A homepage is usually just a hero banner; the About page tends to
+    have the actual substance worth citing — fetch it too when linked."""
+    import app.adapters.research as research_mod
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://acme.io":
+            return httpx.Response(200, text=(
+                '<nav><a href="/about-us">About us</a></nav>'
+                '<h1>Acme Robotics</h1>'))
+        if str(request.url) == "https://acme.io/about-us":
+            return httpx.Response(200, text=(
+                "<p>Founded in 2019, Acme builds warehouse robots.</p>"))
+        return httpx.Response(404)
+
+    monkeypatch.setattr(research_mod, "_host_is_public", lambda host: True)
+
+    class Lead:
+        domain = "acme.io"
+        company = "Acme"
+        id = 1
+
+    result = _researcher(handler)._fetch_website(Lead())
+    assert len(result) == 2
+    labels = [label for label, _, _ in result]
+    assert any("website" in l.lower() for l in labels)
+    assert any("about" in l.lower() for l in labels)
+    about_text = next(text for label, text, _ in result if "about" in label.lower())
+    assert "Founded in 2019" in about_text
+
+
+def test_no_about_link_means_just_the_homepage(monkeypatch):
+    import app.adapters.research as research_mod
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<h1>Acme Robotics</h1><p>Warehouse robots.</p>")
+
+    monkeypatch.setattr(research_mod, "_host_is_public", lambda host: True)
+
+    class Lead:
+        domain = "acme.io"
+        company = "Acme"
+        id = 1
+
+    result = _researcher(handler)._fetch_website(Lead())
+    assert len(result) == 1
 
 
 # ---------- researcher orchestration ----------
@@ -170,7 +220,9 @@ def test_research_returns_empty_when_nothing_found(monkeypatch):
     lead = Lead(id=1, name="X", company="Nope", domain="nope.test",
                 email="x@nope.test")
     result = researcher.research(lead, Organization(name="Y"))
-    assert result == {"notes": "", "sources": []}
+    assert result["notes"] == ""
+    assert result["sources"] == []
+    assert result["domain"] == "nope.test"
 
 
 def test_research_skips_freemail_domains(monkeypatch):
@@ -236,9 +288,13 @@ def _install_fake_researcher(notes="- Acme just launched a new product."):
     from app.main import app
 
     class FakeResearcher:
+        def domain_for(self, lead):
+            return lead.domain
+
         def research(self, lead, org):
-            return {"notes": notes, "sources": ["https://acme.io"]} if notes \
-                else {"notes": "", "sources": []}
+            return {"notes": notes, "sources": ["https://acme.io"],
+                    "domain": lead.domain} if notes \
+                else {"notes": "", "sources": [], "domain": lead.domain}
 
     app.dependency_overrides[get_researcher] = lambda: FakeResearcher()
 
@@ -274,3 +330,46 @@ def test_generate_sequence_skips_research_when_org_disabled(client, monkeypatch)
     lead = client.get(f"/leads/{lead_id}").json()
     assert lead["research_notes"] is None
     assert lead["researched_at"] is None
+
+
+def test_second_lead_at_same_company_reuses_research(client, monkeypatch):
+    """A hand-picked target list often has several contacts at the same
+    firm — researching each one separately would burn search-API quota
+    re-fetching the same website and news for no benefit."""
+    from app.config import get_settings
+    from app.deps import get_researcher
+    from app.main import app
+    monkeypatch.setattr(get_settings(), "research_enabled", True)
+
+    call_count = {"n": 0}
+
+    class CountingResearcher:
+        def domain_for(self, lead):
+            return lead.domain
+
+        def research(self, lead, org):
+            call_count["n"] += 1
+            return {"notes": f"- notes for lead {lead.id}",
+                    "sources": ["https://acme.io"], "domain": lead.domain}
+
+    app.dependency_overrides[get_researcher] = lambda: CountingResearcher()
+
+    two_leads_csv = ("name,email,company,title,domain\n"
+                     "Ada Lovelace,ada@acme.io,Acme Robotics,VP,acme.io\n"
+                     "Bob Smith,bob@acme.io,Acme Robotics,Director,acme.io\n")
+    client.post("/leads/import",
+                files={"file": ("l.csv", io.BytesIO(two_leads_csv.encode()), "text/csv")})
+    client.post("/icp/rules", json={"name": "Senior", "field": "title",
+                                    "operator": "in", "value": ["VP", "Director"],
+                                    "weight": 60})
+    leads = client.get("/leads").json()
+    lead1, lead2 = leads[0]["id"], leads[1]["id"]
+    client.post(f"/leads/{lead1}/score")
+    client.post(f"/leads/{lead2}/score")
+
+    client.post(f"/leads/{lead1}/generate_sequence")
+    client.post(f"/leads/{lead2}/generate_sequence")
+
+    assert call_count["n"] == 1, "second lead should reuse the first's research"
+    lead2_after = client.get(f"/leads/{lead2}").json()
+    assert lead2_after["research_notes"] == f"- notes for lead {lead1}"

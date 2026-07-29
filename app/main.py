@@ -78,6 +78,12 @@ async def lifespan(app: FastAPI):
         "Julian will use deterministic templates/heuristics instead of "
         "a real LLM for drafting and reply classification",
     )
+    logger.info(
+        "Search API key (Tavily, for lead research news): %s",
+        "configured" if settings.search_api_key else "NOT SET — "
+        "Julian will only research a lead's company website, never recent "
+        "news, since news search is disabled without this key",
+    )
     task = None
     if settings.scheduler_enabled:
         task = asyncio.create_task(_agent_loop(settings.scheduler_interval_seconds))
