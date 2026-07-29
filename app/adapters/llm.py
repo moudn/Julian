@@ -15,12 +15,15 @@ the workflow can be exercised end-to-end in development.
 """
 
 import json
+import logging
 import re
 
 import httpx
 
 from app.config import get_settings
 from app.models import Lead, Organization
+
+logger = logging.getLogger(__name__)
 
 # Common spam-filter trigger phrases; drafts are linted against these and
 # the LLM is asked to rewrite if any appear.
@@ -383,8 +386,18 @@ class OpenRouterAdapter:
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             data = _parse_classification(content)
-        except (httpx.HTTPError, KeyError, IndexError, LLMError):
-            # Classification must never break ingestion; escalate instead
+        except (httpx.HTTPError, KeyError, IndexError, LLMError) as exc:
+            # Classification must never break ingestion; escalate instead.
+            # Logged because this looks identical to the model's own COMPLEX
+            # decision otherwise — an OpenRouter error or a guardrail
+            # blocking the request would silently masquerade as Julian
+            # "deciding" a reply needs a human, with no visible trace.
+            body = getattr(getattr(exc, "response", None), "text", "")
+            logger.warning(
+                "classify_reply: OpenRouter call failed for lead %s, "
+                "falling back to COMPLEX (%s)%s",
+                lead.id, exc, f" — response body: {body}" if body else "",
+            )
             return {"category": "COMPLEX", "wants_meeting": False,
                     "suggested_reply": _fallback_complex_reply(lead, org),
                     "answer": ""}
@@ -393,6 +406,10 @@ class OpenRouterAdapter:
             # COMPLEX, but nothing enforces that — and a blank draft hides
             # the suggested-reply affordance in the dashboard entirely
             # (see _heuristic_classify for the same guarantee offline).
+            logger.info(
+                "classify_reply: model classified lead %s as COMPLEX with "
+                "no suggested_reply, using generic fallback", lead.id,
+            )
             data["suggested_reply"] = _fallback_complex_reply(lead, org)
         return data
 
@@ -445,8 +462,12 @@ class OpenRouterAdapter:
             )
             response.raise_for_status()
             text = response.json()["choices"][0]["message"]["content"].strip()
-        except (httpx.HTTPError, KeyError, IndexError):
+        except (httpx.HTTPError, KeyError, IndexError) as exc:
             # Never break ingestion over this; the caller escalates instead.
+            logger.warning(
+                "compose_interest_reply: OpenRouter call failed for lead "
+                "%s, escalating to human (%s)", lead.id, exc,
+            )
             return ""
         return text
 
