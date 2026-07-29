@@ -24,17 +24,17 @@ def upgrade() -> None:
     # server_default supplies a value for any existing rows; the app models
     # set their own defaults on new inserts.
     op.add_column('google_credentials', sa.Column('broken', sa.Boolean(),
-                  nullable=False, server_default=sa.text('0')))
+                  nullable=False, server_default=sa.text('false')))
     op.add_column('google_credentials', sa.Column('broken_reason', sa.String(length=255), nullable=True))
     op.add_column('google_credentials', sa.Column('broken_notified', sa.Boolean(),
-                  nullable=False, server_default=sa.text('0')))
+                  nullable=False, server_default=sa.text('false')))
     op.add_column('outreach_messages', sa.Column('send_attempts', sa.Integer(),
                   nullable=False, server_default=sa.text('0')))
     op.add_column('outreach_messages', sa.Column('last_error', sa.String(length=500), nullable=True))
     # Grandfather any pre-existing users as verified; new signups default to
     # unverified via the model default.
     op.add_column('users', sa.Column('email_verified', sa.Boolean(),
-                  nullable=False, server_default=sa.text('1')))
+                  nullable=False, server_default=sa.text('true')))
     # ### end Alembic commands ###
 
 
