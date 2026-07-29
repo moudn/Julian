@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     billing_success_url: str = "http://localhost:8000/billing/success"
     billing_cancel_url: str = "http://localhost:8000/billing/cancelled"
 
+    # Public base URL of this deployment, used to build links that land a
+    # user back in the dashboard (email verification, OAuth returns).
+    app_base_url: str = "http://localhost:8000"
+
     # Error tracking (optional). Set a Sentry DSN to enable.
     sentry_dsn: str = ""
     environment: str = "development"

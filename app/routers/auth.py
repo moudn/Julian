@@ -2,7 +2,8 @@ import logging
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, EmailStr, Field
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,11 +29,40 @@ EMAIL_SEND_ERROR_DETAIL = (
 )
 
 
+PASSWORD_RULES = (
+    "Password must be at least 8 characters and include an uppercase "
+    "letter, a lowercase letter, and a number."
+)
+
+
+def validate_password_strength(password: str) -> str:
+    """Enforced server-side so the rules hold regardless of the client.
+
+    Deliberately no forced symbol: length and mixed character classes carry
+    most of the real strength, and symbol rules mostly push people towards
+    predictable substitutions.
+    """
+    if len(password) < 8:
+        raise ValueError(PASSWORD_RULES)
+    if not any(c.isupper() for c in password):
+        raise ValueError(PASSWORD_RULES)
+    if not any(c.islower() for c in password):
+        raise ValueError(PASSWORD_RULES)
+    if not any(c.isdigit() for c in password):
+        raise ValueError(PASSWORD_RULES)
+    return password
+
+
 class SignupRequest(BaseModel):
     organization_name: str = Field(min_length=1, max_length=255)
     name: str = Field(min_length=1, max_length=255)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def _strong_password(cls, value: str) -> str:
+        return validate_password_strength(value)
 
 
 class LoginRequest(BaseModel):
@@ -123,14 +153,35 @@ def signup(request: SignupRequest, http_request: Request,
 
 def _send_verification_email(email_sender, user: User) -> None:
     token = make_verify_token(user.id)
+    link = f"{get_settings().app_base_url.rstrip('/')}/auth/verify?token={token}"
     email_sender.send(
         to=user.email,
         subject="Confirm your email for Julian",
         body=(f"Hi {user.name},\n\nWelcome to Julian. Confirm your email so "
-              f"you can start sending outreach:\n\n{token}\n\n"
-              "Paste it into the dashboard's verification prompt, or POST it "
-              "to /auth/verify_email. The link is valid for 24 hours."),
+              f"you can start sending outreach:\n\n{link}\n\n"
+              f"If the link doesn't work, paste this code into the "
+              f"dashboard instead:\n\n{token}\n\n"
+              "Either way, it's valid for 24 hours."),
     )
+
+
+@router.get("/verify")
+def verify_email_link(token: str, db: Session = Depends(get_db)):
+    """Clickable link from the verification email.
+
+    Redirects back into the dashboard either way so the user always lands
+    somewhere useful rather than on raw JSON.
+    """
+    user_id = verify_email_token(token)
+    user = db.get(User, user_id) if user_id is not None else None
+    base = get_settings().app_base_url.rstrip("/")
+    if user is None:
+        return RedirectResponse(url=f"{base}/app/#/settings?verified=expired",
+                                status_code=303)
+    user.email_verified = True
+    db.commit()
+    return RedirectResponse(url=f"{base}/app/#/dashboard?verified=1",
+                            status_code=303)
 
 
 class VerifyEmailRequest(BaseModel):
@@ -183,6 +234,11 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def _strong_password(cls, value: str) -> str:
+        return validate_password_strength(value)
 
 
 @router.post("/forgot_password")

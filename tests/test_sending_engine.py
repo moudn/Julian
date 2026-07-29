@@ -83,6 +83,29 @@ def test_send_cycle_sends_only_due_steps(client):
     assert client.post("/scheduler/run").json()["sent"] == 1
 
 
+def test_activation_rejects_footer_missing_address_or_optout(client):
+    """A footer that's merely non-empty used to be enough. Anti-spam law
+    requires an actual opt-out instruction and a real postal address."""
+    lead_id = _lead_with_sequence(client)
+
+    client.patch("/auth/org", json={"email_footer": "Thanks, the team"})
+    response = client.post(f"/leads/{lead_id}/activate_sequence")
+    assert response.status_code == 409
+    assert "opt-out" in response.json()["detail"]
+    assert "postal address" in response.json()["detail"]
+
+    client.patch("/auth/org", json={
+        "email_footer": "Reply STOP to unsubscribe. No address though."})
+    response = client.post(f"/leads/{lead_id}/activate_sequence")
+    assert response.status_code == 409
+    assert "postal address" in response.json()["detail"]
+    assert "opt-out" not in response.json()["detail"]  # that part's satisfied
+
+    client.patch("/auth/org", json={
+        "email_footer": "\n--\nAcme, 1 Main St. Reply STOP to unsubscribe."})
+    assert client.post(f"/leads/{lead_id}/activate_sequence").status_code == 200
+
+
 def test_send_cycle_appends_org_optout_footer(client, email_sender, monkeypatch):
     from app.services import sending
     monkeypatch.setattr(sending, "get_outbound_sender",

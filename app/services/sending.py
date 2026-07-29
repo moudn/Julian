@@ -9,6 +9,7 @@ automatically.
 
 import logging
 import random
+import re
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
@@ -54,6 +55,31 @@ HARD_BOUNCE_SIGNALS = (
 )
 
 
+# CAN-SPAM (and the UK/EU equivalents) require every commercial email to
+# carry a working opt-out and a real postal address. The old gate only
+# checked the footer wasn't blank, which a single space satisfied — these
+# phrases and the digit check are a heuristic for the two things the law
+# actually requires. Not a substitute for the customer reading the actual
+# rules, but it stops the most obvious way to launch non-compliant by
+# accident.
+FOOTER_OPTOUT_PHRASES = (
+    "unsubscribe", "opt out", "opt-out", "opt-out", "no thanks",
+    "stop emailing", "stop contacting", "remove me", "reply stop",
+    "click here to unsubscribe", "to opt out", "to stop",
+)
+
+
+def footer_missing_requirements(footer: str) -> list[str]:
+    """Return a human-readable list of what a footer is missing, or []."""
+    lowered = footer.lower()
+    missing = []
+    if not any(p in lowered for p in FOOTER_OPTOUT_PHRASES):
+        missing.append('an opt-out instruction (e.g. "reply STOP to unsubscribe")')
+    if not re.search(r"\d", footer):
+        missing.append("a postal address (needs at least a street number or postcode)")
+    return missing
+
+
 def _is_hard_bounce(message: str) -> bool:
     lowered = message.lower()
     return any(signal in lowered for signal in HARD_BOUNCE_SIGNALS)
@@ -96,11 +122,19 @@ def activate_sequence(db: Session, lead: Lead, org: Organization) -> list[Outrea
         )
     if not lead.email:
         raise SendingError("Lead has no email address")
-    if not (org.email_footer or "").strip():
+    footer = (org.email_footer or "").strip()
+    if not footer:
         raise SendingError(
             "Set your email footer first (Settings): it must include an "
             "opt-out line and your postal address — required by anti-spam "
             "law (CAN-SPAM) before Julian can send on your behalf."
+        )
+    missing = footer_missing_requirements(footer)
+    if missing:
+        raise SendingError(
+            "Your email footer is missing " + " and ".join(missing) + " — "
+            "both are required by anti-spam law (CAN-SPAM and equivalents) "
+            "before Julian can send on your behalf. Update it in Settings."
         )
     from app.services.suppression import is_suppressed
     if is_suppressed(db, org.id, lead.email):

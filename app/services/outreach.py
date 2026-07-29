@@ -31,18 +31,23 @@ def generate_sequence(db: Session, lead: Lead, org: Organization,
 
     maybe_research(db, lead, org, researcher)
 
-    # Drop existing unsent drafts; never touch sent messages
+    # Drop existing unsent drafts; never touch sent messages. Captured by
+    # step first so a regeneration can be told what it wrote last time —
+    # otherwise the model has no signal this is a repeat request and
+    # regenerating routinely produced a near-duplicate of the same draft.
     existing = db.scalars(select(OutreachMessage).where(
         OutreachMessage.lead_id == lead.id,
         OutreachMessage.status.in_([MessageStatus.DRAFT, MessageStatus.APPROVED]),
     )).all()
+    previous_by_step = {message.step: message.body for message in existing}
     for message in existing:
         db.delete(message)
 
     messages: list[OutreachMessage] = []
     prior_bodies: list[str] = []
     for step, days in SEQUENCE_CADENCE.items():
-        draft = llm.generate_step(lead, org, step, prior_bodies)
+        draft = llm.generate_step(lead, org, step, prior_bodies,
+                                  previous_attempt=previous_by_step.get(step))
         prior_bodies.append(draft["body"])
         messages.append(OutreachMessage(
             org_id=org.id,

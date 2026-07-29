@@ -42,10 +42,10 @@ def test_password_reset_flow(client, email_sender):
                  if line.count(".") == 2 and line.split(".")[0].isdigit())
 
     response = client.post("/auth/reset_password", json={
-        "token": token, "new_password": "brand-new-pass-1"})
+        "token": token, "new_password": "Brand-new-pass-1"})
     assert response.status_code == 200
     login = client.post("/auth/login", json={
-        "email": "owner@acme-sales.io", "password": "brand-new-pass-1"})
+        "email": "owner@acme-sales.io", "password": "Brand-new-pass-1"})
     assert login.status_code == 200
     # unknown emails get the same 200 (no account probing)
     assert client.post("/auth/forgot_password",
@@ -54,7 +54,7 @@ def test_password_reset_flow(client, email_sender):
 
 def test_reset_rejects_bad_tokens(client):
     assert client.post("/auth/reset_password", json={
-        "token": "1.9999999999.deadbeef", "new_password": "whatever-pass"
+        "token": "1.9999999999.deadbeef", "new_password": "Whatever-pass-1"
     }).status_code == 400
 
 
@@ -62,7 +62,7 @@ def test_api_key_revocation(client):
     keys = client.get("/auth/keys").json()
     assert len(keys) == 1
     login = client.post("/auth/login", json={
-        "email": "owner@acme-sales.io", "password": "s3cretpass!"})
+        "email": "owner@acme-sales.io", "password": "S3cretpass!"})
     second_key = login.json()["api_key"]
 
     # revoke the second key; it stops working, the first still does

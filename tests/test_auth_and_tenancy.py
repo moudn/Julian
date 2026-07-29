@@ -44,13 +44,71 @@ def test_signup_login_me(anon_client):
 
     # login mints a fresh, different key that also works
     login = anon_client.post("/auth/login", json={
-        "email": "owner@acme-sales.io", "password": "s3cretpass!",
+        "email": "owner@acme-sales.io", "password": "S3cretpass!",
     })
     assert login.status_code == 200
     new_key = login.json()["api_key"]
     assert new_key != api_key
     me = anon_client.get("/auth/me", headers={"Authorization": f"Bearer {new_key}"})
     assert me.status_code == 200
+
+
+def test_signup_rejects_weak_passwords(anon_client):
+    weak = ["alllowercase1", "ALLUPPERCASE1", "NoDigitsHereX"]
+    for i, pw in enumerate(weak):
+        response = anon_client.post("/auth/signup", json={
+            "organization_name": "X", "name": "Y",
+            "email": f"weak{i}@x.io", "password": pw})
+        assert response.status_code == 422, f"{pw!r} should have been rejected"
+        assert "uppercase" in str(response.json()).lower()
+
+
+def test_signup_rejects_too_short_password(anon_client):
+    response = anon_client.post("/auth/signup", json={
+        "organization_name": "X", "name": "Y",
+        "email": "tooshort@x.io", "password": "Ab1defg"})
+    assert response.status_code == 422
+
+
+def test_signup_accepts_a_strong_password(anon_client):
+    response = anon_client.post("/auth/signup", json={
+        "organization_name": "X", "name": "Y",
+        "email": "strong@x.io", "password": "Strong-pass-1"})
+    assert response.status_code == 201
+
+
+def test_verification_link_verifies_and_redirects_to_dashboard(anon_client):
+    from app.database import SessionLocal
+    from app.models import User
+    from app.security import make_verify_token
+
+    signup(anon_client, email="link@x.io", verify=False)
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter_by(email="link@x.io").one()
+        assert user.email_verified is False
+        token = make_verify_token(user.id)
+    finally:
+        db.close()
+
+    response = anon_client.get("/auth/verify", params={"token": token},
+                               follow_redirects=False)
+    assert response.status_code == 303
+    assert "verified=1" in response.headers["location"]
+    assert "/app/#/dashboard" in response.headers["location"]
+
+    db = SessionLocal()
+    try:
+        assert db.query(User).filter_by(email="link@x.io").one().email_verified is True
+    finally:
+        db.close()
+
+
+def test_verification_link_with_bad_token_still_redirects_somewhere_useful(anon_client):
+    response = anon_client.get("/auth/verify", params={"token": "garbage"},
+                               follow_redirects=False)
+    assert response.status_code == 303
+    assert "verified=expired" in response.headers["location"]
 
 
 def test_login_wrong_password_rejected(anon_client):
@@ -65,7 +123,7 @@ def test_duplicate_signup_email_rejected(anon_client):
     signup(anon_client)
     response = anon_client.post("/auth/signup", json={
         "organization_name": "Other", "name": "X",
-        "email": "owner@acme-sales.io", "password": "s3cretpass!",
+        "email": "owner@acme-sales.io", "password": "S3cretpass!",
     })
     assert response.status_code == 409
 
@@ -144,7 +202,7 @@ def test_signup_succeeds_even_if_verification_email_fails(
     _break_email_sender(email_sender, monkeypatch)
     response = anon_client.post("/auth/signup", json={
         "organization_name": "Acme Sales", "name": "Owner",
-        "email": "owner@acme-sales.io", "password": "s3cretpass!",
+        "email": "owner@acme-sales.io", "password": "S3cretpass!",
     })
     assert response.status_code == 201
     assert "api_key" in response.json()
