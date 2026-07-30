@@ -89,6 +89,7 @@ class OrgSettingsIn(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     auto_reply_enabled: bool | None = None
     research_enabled: bool | None = None
+    example_emails: str | None = Field(default=None, max_length=8000)
 
 
 class OrgOut(BaseModel):
@@ -103,6 +104,7 @@ class OrgOut(BaseModel):
     timezone: str
     auto_reply_enabled: bool
     research_enabled: bool
+    example_emails: str | None
     email_verified: bool = True
 
 
@@ -322,6 +324,7 @@ def me(org: Organization = Depends(get_current_org),
         timezone=org.timezone,
         auto_reply_enabled=org.auto_reply_enabled,
         research_enabled=org.research_enabled,
+        example_emails=org.example_emails,
         email_verified=user.email_verified,
     )
 
@@ -357,6 +360,8 @@ def update_org_settings(
         org.auto_reply_enabled = request.auto_reply_enabled
     if request.research_enabled is not None:
         org.research_enabled = request.research_enabled
+    if request.example_emails is not None:
+        org.example_emails = request.example_emails
     db.commit()
     db.refresh(org)
     return OrgOut(
@@ -369,4 +374,5 @@ def update_org_settings(
         timezone=org.timezone,
         auto_reply_enabled=org.auto_reply_enabled,
         research_enabled=org.research_enabled,
+        example_emails=org.example_emails,
     )

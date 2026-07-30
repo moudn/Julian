@@ -707,6 +707,9 @@ routes.settings = async () => {
               <textarea name="product_description" placeholder="e.g. We build payroll software for restaurants that cuts admin time 80%">${esc(ORG.product_description || "")}</textarea></label>
             <label>Knowledge base (the ONLY facts Julian may use to answer questions)
               <textarea name="knowledge_base" placeholder="Pricing: ... Integrations: ... Onboarding: ...">${esc(ORG.knowledge_base || "")}</textarea></label>
+            <label>Example emails (1-2 you've actually sent, so Julian's drafts sound like you —
+              separate multiple examples with a line containing only ---)
+              <textarea name="example_emails" rows="6" placeholder="Hi Jamie,&#10;&#10;...&#10;&#10;---&#10;&#10;Hi Sam,&#10;&#10;...">${esc(ORG.example_emails || "")}</textarea></label>
             <label>Email footer — must include an opt-out line and your postal address
               (required by anti-spam law before Julian can send)
               <textarea name="email_footer" oninput="ui.checkFooterCompliance(this.value)"

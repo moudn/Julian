@@ -10,6 +10,7 @@ from app.adapters.llm import (
     SEQUENCE_CADENCE,
     OpenRouterAdapter,
     _parse_draft,
+    _parse_example_emails,
     lint_spam_phrases,
 )
 
@@ -199,6 +200,44 @@ def test_regenerating_tells_the_model_what_it_wrote_last_time(client):
     step_1_regen_prompt = captured_prompts[step_1_prompts_before]
     assert "REGENERATION" in step_1_regen_prompt
     assert "Draft text." in step_1_regen_prompt  # the previous body was included
+
+
+def test_parse_example_emails_splits_on_delimiter():
+    assert _parse_example_emails(None) == []
+    assert _parse_example_emails("  \n") == []
+    assert _parse_example_emails("Hi A,\n\nBody.\n\nMo") == ["Hi A,\n\nBody.\n\nMo"]
+    parsed = _parse_example_emails("First one.\n---\nSecond one.")
+    assert parsed == ["First one.", "Second one."]
+
+
+def test_example_emails_flow_into_generation_prompt(client):
+    """The org's own pasted-in example emails should reach the LLM as style
+    exemplars, so drafts sound like the sender rather than a generic voice."""
+    from app.deps import get_llm_adapter
+    from app.main import app
+
+    captured_prompts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_prompts.append(body["messages"][-1]["content"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(
+            {"subject": "Quick one", "body": "Draft text. Julian"})}}]})
+
+    adapter = OpenRouterAdapter(
+        api_key="test-key", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    app.dependency_overrides[get_llm_adapter] = lambda: adapter
+
+    client.patch("/auth/org", json={
+        "example_emails": "Hi Jamie,\n\nQuick one for you.\n\nMo"
+                         "\n---\n"
+                         "Hi Sam,\n\nSaw your launch — nice work.\n\nMo",
+    })
+    lead_id = _scored_lead(client)
+    client.post(f"/leads/{lead_id}/generate_sequence")
+
+    assert any("Style examples" in p for p in captured_prompts)
+    assert any("Saw your launch" in p for p in captured_prompts)
 
 
 def test_product_description_flows_into_drafts(client):

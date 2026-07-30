@@ -534,6 +534,17 @@ class OpenRouterAdapter:
                 f"{lead.research_notes}"
             )
 
+        style_line = ""
+        examples = _parse_example_emails(
+            getattr(org, "example_emails", None))[:MAX_EXAMPLE_EMAILS]
+        if examples:
+            style_line = (
+                "Style examples written by the sender — match this voice, "
+                "tone, and structure, but write fresh content for THIS "
+                "recipient; never reuse their wording or specifics:\n"
+                + "\n---\n".join(examples)
+            )
+
         prior = ""
         if prior_bodies:
             prior = "Earlier emails in this sequence (do not repeat their "
@@ -555,6 +566,7 @@ class OpenRouterAdapter:
             f"Write sequence email #{step}. {STEP_GUIDANCE[step]}",
             sender_line,
             recipient_line,
+            style_line,
             research_line,
             prior,
             redo,
@@ -651,6 +663,19 @@ def _signer_name(org: Organization) -> str:
     """Name to sign outreach with; falls back to a team signature."""
     name = (getattr(org, "sender_name", None) or "").strip()
     return name or f"The {org.name} team"
+
+
+MAX_EXAMPLE_EMAILS = 2
+MAX_EXAMPLE_CHARS = 1500
+
+
+def _parse_example_emails(raw: str | None) -> list[str]:
+    """Split an org's pasted-in example emails on a line containing only
+    "---", dropping blanks. Caller caps how many are actually used."""
+    if not raw or not raw.strip():
+        return []
+    parts = re.split(r"\n\s*---\s*\n", raw.strip())
+    return [p.strip()[:MAX_EXAMPLE_CHARS] for p in parts if p.strip()]
 
 
 def _template_interest_reply(lead: Lead, org: Organization) -> str:

@@ -96,6 +96,10 @@ class Organization(Base):
     # When True, Julian researches each lead (company site + news) before
     # writing and cites what it finds.
     research_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # A few of the tenant's own real outreach emails, separated by a line
+    # containing only "---". Fed to the LLM as style examples so generated
+    # drafts sound like this sender rather than a generic template.
+    example_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)
