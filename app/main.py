@@ -84,6 +84,13 @@ async def lifespan(app: FastAPI):
         "Julian will only research a lead's company website, never recent "
         "news, since news search is disabled without this key",
     )
+    logger.info(
+        "SMTP (transactional email — verification, password reset, "
+        "notifications): %s",
+        f"configured (host={settings.smtp_host})" if settings.smtp_host
+        else "NOT SET — these emails silently go to console-only, so a "
+             "real signup can never receive its verification email",
+    )
     task = None
     if settings.scheduler_enabled:
         task = asyncio.create_task(_agent_loop(settings.scheduler_interval_seconds))
