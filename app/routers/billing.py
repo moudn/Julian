@@ -114,10 +114,16 @@ async def webhook(
         if org is not None:
             org.stripe_customer_id = obj.get("customer")
             org.stripe_subscription_id = obj.get("subscription")
+            # Provisional — checkout.session doesn't carry the subscription's
+            # real status (e.g. "trialing" when a trial period is active).
+            # The subscription.created event fired right alongside this one
+            # corrects it below; this is just a safe fallback if that event
+            # were somehow missed.
             org.subscription_status = "active"
             db.commit()
 
-    elif event_type in ("customer.subscription.updated", "customer.subscription.deleted"):
+    elif event_type in ("customer.subscription.created", "customer.subscription.updated",
+                        "customer.subscription.deleted"):
         org = db.scalar(select(Organization).where(
             Organization.stripe_subscription_id == obj.get("id")))
         if org is None and obj.get("customer"):

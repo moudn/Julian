@@ -17,6 +17,7 @@ from app.routers import (
     bookings,
     icp,
     integrations,
+    internal,
     leads,
     replies,
     scheduler,
@@ -41,25 +42,13 @@ def _init_sentry():
         logger.warning("SENTRY_DSN set but sentry-sdk not installed; skipping")
 
 
-def _run_agent_cycle() -> dict:
-    """One full autopilot pass: triage new replies first, then send due steps."""
-    from app.services.replies import run_reply_cycle_all_orgs
-    from app.services.sending import run_send_cycle_all_orgs
-
-    db = SessionLocal()
-    try:
-        replies_result = run_reply_cycle_all_orgs(db)
-        send_result = run_send_cycle_all_orgs(db)
-    finally:
-        db.close()
-    return {"replies": replies_result, "send": send_result}
-
-
 async def _agent_loop(interval_seconds: int):
+    from app.services.agent_cycle import run_agent_cycle
+
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            result = await asyncio.to_thread(_run_agent_cycle)
+            result = await asyncio.to_thread(run_agent_cycle)
             if (result["send"]["sent"] or result["send"]["errors"]
                     or result["replies"]["processed"] or result["replies"]["errors"]):
                 logger.info("agent cycle: %s", result)
@@ -135,6 +124,7 @@ app.include_router(replies.router)
 app.include_router(scheduler.router)
 app.include_router(analytics.router)
 app.include_router(suppressions.router)
+app.include_router(internal.router)
 
 
 @app.middleware("http")

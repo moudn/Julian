@@ -59,7 +59,7 @@ class StripeAdapter:
         settings = get_settings()
         if not settings.stripe_price_id:
             raise StripeError("STRIPE_PRICE_ID is not configured")
-        session = self._post("/checkout/sessions", {
+        params = {
             "mode": "subscription",
             "line_items[0][price]": settings.stripe_price_id,
             "line_items[0][quantity]": "1",
@@ -67,7 +67,10 @@ class StripeAdapter:
             "customer_email": customer_email,
             "success_url": settings.billing_success_url,
             "cancel_url": settings.billing_cancel_url,
-        })
+        }
+        if settings.trial_period_days > 0:
+            params["subscription_data[trial_period_days]"] = str(settings.trial_period_days)
+        session = self._post("/checkout/sessions", params)
         return session["url"]
 
     def create_portal_session(self, stripe_customer_id: str) -> str:

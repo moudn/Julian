@@ -46,9 +46,14 @@ class Settings(BaseSettings):
     gmail_api_base: str = "https://gmail.googleapis.com/gmail/v1"
 
     # Sequence send scheduler (background loop). Interval in seconds;
-    # scheduler_enabled=false relies on POST /scheduler/run (cron) instead.
+    # scheduler_enabled=false relies on an external cron hitting
+    # POST /internal/run-cycle instead — for hosts that sleep the app when
+    # idle (e.g. a free tier) rather than keeping a process running.
     scheduler_enabled: bool = True
     scheduler_interval_seconds: int = 60
+    # Shared secret an external cron service must send as X-Cron-Secret to
+    # POST /internal/run-cycle. Empty (default) disables the endpoint.
+    cron_secret: str = ""
     # Only send within org-local business hours (disable for testing only)
     enforce_send_window: bool = True
 
@@ -58,6 +63,8 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_price_id: str = ""
     stripe_api_base: str = "https://api.stripe.com/v1"
+    # Free trial length for every new subscription. 0 disables the trial.
+    trial_period_days: int = 30
     billing_success_url: str = "http://localhost:8000/billing/success"
     billing_cancel_url: str = "http://localhost:8000/billing/cancelled"
 

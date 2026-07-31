@@ -177,3 +177,71 @@ def test_adapter_requires_configuration():
     adapter = StripeAdapter(api_key="", client=httpx.Client())
     with pytest.raises(StripeError, match="not configured"):
         adapter.create_checkout_session(1, "a@b.c")
+
+
+# ---------- trial period ----------
+
+def test_checkout_includes_trial_period(client, billing_on, monkeypatch):
+    monkeypatch.setattr(get_settings(), "trial_period_days", 30)
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, json={"url": "https://checkout.stripe.com/pay/cs_test"})
+
+    from app.main import app
+    from app.routers.billing import get_stripe_adapter
+    adapter = StripeAdapter(api_key="sk_test_123",
+                            client=httpx.Client(transport=httpx.MockTransport(handler)))
+    app.dependency_overrides[get_stripe_adapter] = lambda: adapter
+
+    client.post("/billing/checkout")
+    assert "subscription_data%5Btrial_period_days%5D=30" in captured["body"]
+
+
+def test_zero_trial_period_omits_it_from_checkout(client, billing_on, monkeypatch):
+    monkeypatch.setattr(get_settings(), "trial_period_days", 0)
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, json={"url": "https://checkout.stripe.com/pay/cs_test"})
+
+    from app.main import app
+    from app.routers.billing import get_stripe_adapter
+    adapter = StripeAdapter(api_key="sk_test_123",
+                            client=httpx.Client(transport=httpx.MockTransport(handler)))
+    app.dependency_overrides[get_stripe_adapter] = lambda: adapter
+
+    client.post("/billing/checkout")
+    assert "trial_period_days" not in captured["body"]
+
+
+def test_subscription_created_reflects_trialing_status(client, billing_on):
+    """checkout.session.completed can't carry the real subscription status
+    (e.g. "trialing"); the subscription.created event fired alongside it
+    must correct it — this used to only be handled for .updated/.deleted,
+    so a trial silently showed as "active" instead of "trialing"."""
+    org_id = client.get("/auth/me").json()["id"]
+    payload = json.dumps({
+        "type": "checkout.session.completed",
+        "data": {"object": {"client_reference_id": str(org_id),
+                            "customer": "cus_7", "subscription": "sub_7"}},
+    }).encode()
+    client.post("/billing/webhook", content=payload,
+               headers={"Stripe-Signature": sign(payload)})
+    assert client.get("/billing/status").json()["subscription_status"] == "active"
+
+    trial_end = int(time.time()) + 30 * 86400
+    payload = json.dumps({
+        "type": "customer.subscription.created",
+        "data": {"object": {"id": "sub_7", "customer": "cus_7",
+                            "status": "trialing", "current_period_end": trial_end}},
+    }).encode()
+    response = client.post("/billing/webhook", content=payload,
+                           headers={"Stripe-Signature": sign(payload)})
+    assert response.status_code == 200
+
+    status = client.get("/billing/status").json()
+    assert status["subscription_status"] == "trialing"
+    assert client.get("/leads").status_code == 200  # trialing counts as active
