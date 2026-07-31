@@ -146,15 +146,17 @@ def score(
     force: bool = False,
     db: Session = Depends(get_db),
     org: Organization = Depends(get_current_org),
+    llm: OpenRouterAdapter = Depends(get_llm_adapter),
 ):
-    """Score a lead against the org's ICP rules.
+    """Score a lead against the org's ICP rules (plus an LLM fit judgment,
+    if the org has that enabled).
 
     `force=true` advances the lead to SCORED even if it falls below the
     org's score_threshold — used when a rep wants to manually pursue a
     lead the automatic rules would otherwise leave stuck in NEW.
     """
-    lead = score_lead(db, _get_lead(db, lead_id, org), org, force=force)
-    return ScoreResult(lead_id=lead.id, score=lead.score,
+    lead = score_lead(db, _get_lead(db, lead_id, org), org, force=force, llm=llm)
+    return ScoreResult(lead_id=lead.id, score=lead.score, ai_fit_score=lead.ai_fit_score,
                        threshold=org.score_threshold, state=lead.state)
 
 
@@ -162,13 +164,15 @@ def score(
 def score_all(
     db: Session = Depends(get_db),
     org: Organization = Depends(get_current_org),
+    llm: OpenRouterAdapter = Depends(get_llm_adapter),
 ):
     results = []
     leads = db.scalars(select(Lead).where(
         Lead.state == LeadState.NEW, Lead.org_id == org.id)).all()
     for lead in leads:
-        lead = score_lead(db, lead, org)
+        lead = score_lead(db, lead, org, llm=llm)
         results.append(ScoreResult(lead_id=lead.id, score=lead.score,
+                                   ai_fit_score=lead.ai_fit_score,
                                    threshold=org.score_threshold, state=lead.state))
     return results
 

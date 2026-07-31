@@ -23,6 +23,7 @@ class LeadOut(BaseModel):
     source: str
     state: LeadState
     score: float | None
+    ai_fit_score: int | None
     outreach_draft: str | None
     proposed_slots: list[str] | None
     research_notes: str | None
@@ -58,6 +59,7 @@ class ICPRuleOut(ICPRuleIn):
 class ScoreResult(BaseModel):
     lead_id: int
     score: float
+    ai_fit_score: int | None = None
     threshold: float
     state: LeadState
 

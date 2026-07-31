@@ -129,3 +129,141 @@ def test_generate_message_saves_draft_and_advances_state(client):
 
     lead = client.get("/leads/1").json()
     assert lead["outreach_draft"] == body["draft"]
+
+
+# ---------- ICP scoring: negative weights, expanded fields, AI fit ----------
+
+def test_negative_weight_rule_penalizes_score(client):
+    """Negative weights already worked end-to-end (nothing in the schema or
+    matcher restricted them) — this locks that in as supported behavior."""
+    client.post("/icp/rules", json={
+        "name": "Senior", "field": "title", "operator": "contains",
+        "value": "VP", "weight": 60,
+    })
+    client.post("/icp/rules", json={
+        "name": "Intern penalty", "field": "title", "operator": "contains",
+        "value": "Intern", "weight": -100,
+    })
+    _import_csv(client)
+    ada = client.post("/leads/1/score").json()   # VP of Engineering
+    bob = client.post("/leads/2/score").json()   # Intern
+    assert ada["score"] == 60
+    assert bob["score"] == -100
+
+
+def test_rule_can_target_research_notes_field(client):
+    """Rules can already match against any Lead attribute by name — this
+    proves the newly-exposed research_notes option genuinely round-trips,
+    letting a rule react to post-research findings."""
+    client.post("/icp/rules", json={
+        "name": "Funding signal", "field": "research_notes", "operator": "contains",
+        "value": "funding", "weight": 25,
+    })
+    _import_csv(client)
+    from app.database import SessionLocal
+    from app.models import Lead
+    db = SessionLocal()
+    try:
+        lead = db.get(Lead, 1)
+        lead.research_notes = "Recently raised a funding round."
+        db.commit()
+    finally:
+        db.close()
+    result = client.post("/leads/1/score").json()
+    assert result["score"] == 25
+
+
+def test_score_fit_returns_none_without_api_key():
+    from app.adapters.llm import OpenRouterAdapter
+    from app.models import Lead, Organization
+    llm = OpenRouterAdapter(api_key="")
+    lead = Lead(id=1, name="Ada", title="VP")
+    assert llm.score_fit(lead, Organization(name="O")) is None
+
+
+def test_score_fit_parses_integer_response():
+    import httpx
+    from app.adapters.llm import OpenRouterAdapter
+    from app.models import Lead, Organization
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "78"}}]})
+
+    llm = OpenRouterAdapter(api_key="k",
+                            client=httpx.Client(transport=httpx.MockTransport(handler)))
+    lead = Lead(id=1, name="Ada", title="VP of Engineering", company="Acme")
+    score = llm.score_fit(lead, Organization(name="O", product_description="sales software"))
+    assert score == 78
+
+
+def test_score_fit_clamps_out_of_range_values():
+    import httpx
+    from app.adapters.llm import OpenRouterAdapter
+    from app.models import Lead, Organization
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "150"}}]})
+
+    llm = OpenRouterAdapter(api_key="k",
+                            client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert llm.score_fit(Lead(id=1, name="Ada"), Organization(name="O")) == 100
+
+
+def test_score_fit_returns_none_on_unparseable_response():
+    import httpx
+    from app.adapters.llm import OpenRouterAdapter
+    from app.models import Lead, Organization
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "no idea"}}]})
+
+    llm = OpenRouterAdapter(api_key="k",
+                            client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert llm.score_fit(Lead(id=1, name="Ada"), Organization(name="O")) is None
+
+
+def test_score_fit_returns_none_on_api_failure():
+    import httpx
+    from app.adapters.llm import OpenRouterAdapter
+    from app.models import Lead, Organization
+
+    def handler(request):
+        return httpx.Response(500, text="server error")
+
+    llm = OpenRouterAdapter(api_key="k",
+                            client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert llm.score_fit(Lead(id=1, name="Ada"), Organization(name="O")) is None
+
+
+def test_ai_fit_scoring_blends_into_rule_score(client):
+    from app.deps import get_llm_adapter
+    from app.main import app
+
+    class FakeLLM:
+        def score_fit(self, lead, org):
+            return 80
+
+    app.dependency_overrides[get_llm_adapter] = lambda: FakeLLM()
+
+    client.patch("/auth/org", json={"ai_fit_scoring_enabled": True, "ai_fit_weight": 40})
+    client.post("/icp/rules", json={
+        "name": "VP", "field": "title", "operator": "contains", "value": "VP", "weight": 20,
+    })
+    _import_csv(client)
+    result = client.post("/leads/1/score").json()  # Ada, VP of Engineering
+    assert result["ai_fit_score"] == 80
+    assert result["score"] == 20 + round(80 / 100 * 40)  # rule (+20) + AI contribution (+32)
+
+
+def test_ai_fit_scoring_disabled_by_default_skips_llm_call(client):
+    from app.deps import get_llm_adapter
+    from app.main import app
+
+    class FakeLLM:
+        def score_fit(self, lead, org):
+            raise AssertionError("must not be called when AI fit scoring is disabled")
+
+    app.dependency_overrides[get_llm_adapter] = lambda: FakeLLM()
+    _import_csv(client)
+    result = client.post("/leads/1/score").json()
+    assert result["ai_fit_score"] is None

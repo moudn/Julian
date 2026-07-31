@@ -344,6 +344,7 @@ const ui = {
     data.auto_reply_enabled = event.target.querySelector('[name="auto_reply_enabled"]')?.checked ?? undefined;
     data.research_enabled = event.target.querySelector('[name="research_enabled"]')?.checked ?? undefined;
     data.email_signature_enabled = event.target.querySelector('[name="email_signature_enabled"]')?.checked ?? undefined;
+    data.ai_fit_scoring_enabled = event.target.querySelector('[name="ai_fit_scoring_enabled"]')?.checked ?? undefined;
     const stepFields = ["step_template_1", "step_template_2", "step_template_3", "step_template_4"];
     if (stepFields.some((f) => f in data)) {
       const step_templates = {};
@@ -355,6 +356,7 @@ const ui = {
     }
     Object.keys(data).forEach((k) => { if (data[k] === "" || data[k] === undefined) delete data[k]; });
     if (data.score_threshold) data.score_threshold = Number(data.score_threshold);
+    if (data.ai_fit_weight) data.ai_fit_weight = Number(data.ai_fit_weight);
     try {
       ORG = await api("/auth/org", { method: "PATCH", json: data });
       toast("Settings saved.");
@@ -614,7 +616,8 @@ async function leadDetail(id) {
             <dt>Title</dt><dd>${esc(lead.title || "—")}</dd>
             <dt>Size</dt><dd>${lead.company_size ?? "—"}</dd>
             <dt>Location</dt><dd>${esc(lead.location || "—")}</dd>
-            <dt>Score</dt><dd>${lead.score ?? "not scored"}</dd>
+            <dt>Score</dt><dd>${lead.score ?? "not scored"}${lead.ai_fit_score != null
+              ? ` <span class="muted small">(AI fit: ${lead.ai_fit_score}/100)</span>` : ""}</dd>
             <dt>Source</dt><dd>${esc(lead.source)}</dd>
             ${lead.proposed_slots ? `<dt>Offered</dt><dd>${lead.proposed_slots.map(fmtDate).map(esc).join("<br>")}</dd>` : ""}
           </dl>
@@ -878,7 +881,7 @@ routes.settings = async () => {
             <tr><th>Rule</th><th>Condition</th><th>Weight</th><th></th></tr>
             ${rules.map((r) => `<tr><td>${esc(r.name)}</td>
               <td class="muted small">${esc(r.field)} ${esc(r.operator)} ${esc(JSON.stringify(r.value))}</td>
-              <td>${r.weight}</td>
+              <td style="color:${r.weight < 0 ? "var(--danger)" : "inherit"}">${r.weight}</td>
               <td><button class="btn ghost small" onclick="ui.deleteRule(${r.id})">✕</button></td></tr>`).join("")}
           </table>` : `<p class="muted small">No rules yet — leads can't reach SCORED without at least one.</p>`}
           <form onsubmit="return ui.addRule(event)" style="margin-top:12px">
@@ -887,6 +890,8 @@ routes.settings = async () => {
               <label>Field<select name="field">
                 <option value="title">title</option><option value="company_size">company_size</option>
                 <option value="location">location</option><option value="company">company</option>
+                <option value="domain">domain</option><option value="source">source</option>
+                <option value="research_notes">research_notes (after research)</option>
               </select></label>
               <label>Operator<select name="operator">
                 <option value="contains">contains</option><option value="in">in (comma-sep)</option>
@@ -894,8 +899,22 @@ routes.settings = async () => {
               </select></label>
               <label>Value<input name="value" required placeholder="VP, Director"></label>
             </div>
-            <label>Weight<input type="number" name="weight" value="30"></label>
+            <label>Weight (negative to penalize/disqualify, e.g. -50 for "intern")
+              <input type="number" name="weight" value="30"></label>
             <button class="btn" type="submit">Add rule</button>
+          </form>
+        </div>
+        <div class="card"><h2>AI fit scoring</h2>
+          <p class="muted small">Adds an LLM judgment of how well each lead fits what you sell —
+            catches nuance the rules above can't (e.g. reading researched facts holistically).
+            Costs one API call per lead scored.</p>
+          <form onsubmit="return ui.saveSettings(event)">
+            <label><input type="checkbox" name="ai_fit_scoring_enabled" style="width:auto"
+              ${ORG.ai_fit_scoring_enabled ? "checked" : ""}>
+              Blend an AI fit judgment into scoring</label>
+            <label>Max points a perfect (100/100) AI judgment can contribute
+              <input type="number" name="ai_fit_weight" value="${ORG.ai_fit_weight}"></label>
+            <button class="btn primary" type="submit">Save</button>
           </form>
         </div>
       </div>

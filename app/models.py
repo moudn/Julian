@@ -119,6 +119,13 @@ class Organization(Base):
     logo_image: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     logo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Optional LLM-judged fit score, blended into rule-based ICP scoring.
+    # Off by default (costs an API call per lead scored). ai_fit_weight is
+    # the max points a 100/100 judgment can contribute, on the same scale
+    # as an ICPRule's weight.
+    ai_fit_scoring_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    ai_fit_weight: Mapped[float] = mapped_column(Float, default=30.0)
+
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
@@ -216,6 +223,11 @@ class Lead(Base):
         Enum(LeadState, native_enum=False, length=32), default=LeadState.NEW
     )
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Raw 0-100 LLM fit judgment from the last scoring pass (org.
+    # ai_fit_scoring_enabled), kept separately from `score` for
+    # transparency into why a lead scored the way it did. None if AI
+    # scoring was off, or a real LLM call was never available.
+    ai_fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     outreach_draft: Mapped[str | None] = mapped_column(Text, nullable=True)
     # ISO-8601 datetimes offered to the lead while in MEETING_PROPOSED
     proposed_slots: Mapped[list | None] = mapped_column(JSON, nullable=True)

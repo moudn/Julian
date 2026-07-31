@@ -96,6 +96,8 @@ class OrgSettingsIn(BaseModel):
     signature_title: str | None = Field(default=None, max_length=255)
     signature_phone: str | None = Field(default=None, max_length=64)
     signature_website: str | None = Field(default=None, max_length=255)
+    ai_fit_scoring_enabled: bool | None = None
+    ai_fit_weight: float | None = Field(default=None, ge=0, le=1000)
 
 
 class OrgOut(BaseModel):
@@ -117,6 +119,8 @@ class OrgOut(BaseModel):
     signature_phone: str | None
     signature_website: str | None
     logo_data_url: str | None
+    ai_fit_scoring_enabled: bool
+    ai_fit_weight: float
     email_verified: bool = True
 
 
@@ -345,6 +349,8 @@ def _org_out(org: Organization, email_verified: bool = True) -> OrgOut:
         signature_phone=org.signature_phone,
         signature_website=org.signature_website,
         logo_data_url=logo_data_url,
+        ai_fit_scoring_enabled=org.ai_fit_scoring_enabled,
+        ai_fit_weight=org.ai_fit_weight,
         email_verified=email_verified,
     )
 
@@ -398,6 +404,10 @@ def update_org_settings(
         org.signature_phone = request.signature_phone
     if request.signature_website is not None:
         org.signature_website = request.signature_website
+    if request.ai_fit_scoring_enabled is not None:
+        org.ai_fit_scoring_enabled = request.ai_fit_scoring_enabled
+    if request.ai_fit_weight is not None:
+        org.ai_fit_weight = request.ai_fit_weight
     db.commit()
     db.refresh(org)
     return _org_out(org, email_verified=user.email_verified)
