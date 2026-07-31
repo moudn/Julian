@@ -72,6 +72,23 @@ def test_fallback_templates_are_free_of_cliches():
         assert lint_spam_phrases(text) == []
 
 
+def test_fallback_templates_read_sensibly_without_a_company():
+    """Regression: substituting the literal string "your team" wherever a
+    company name would go produced nonsense like "Most teams the size of
+    your team" for a consumer lead with no company on file."""
+    from app.adapters.llm import _template_step
+    from app.models import Lead, Organization
+
+    lead = Lead(name="Sarah Jenkins", company=None)
+    org = Organization(name="Kingsley", sender_name="Mo",
+                       product_description="an AI sales agent")
+    for step in (1, 2, 3, 4):
+        draft = _template_step(lead, org, step)
+        text = draft["subject"] + " " + draft["body"]
+        assert "your team" not in text.lower()
+        assert "size of" not in text.lower()  # the self-referential sentence
+
+
 def test_cliche_in_draft_triggers_one_corrective_rewrite():
     """A cliche-laden first draft must be sent back, exactly like a
     spam-flagged one, rather than mailed to a prospect as-is."""

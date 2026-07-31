@@ -710,21 +710,39 @@ def _template_interest_reply(lead: Lead, org: Organization) -> str:
 
 def _template_step(lead: Lead, org: Organization, step: int) -> dict:
     """Deterministic no-API-key fallback. Product-neutral: it leans on the
-    org's product description rather than assuming any particular pain."""
+    org's product description rather than assuming any particular pain.
+
+    Branches on whether the lead has a company, rather than substituting a
+    "your team" placeholder into company-shaped sentences — that produced
+    self-referential nonsense ("teams the size of your team") for a
+    consumer lead with no company on file.
+    """
     first = lead.name.split()[0] if lead.name else "there"
-    company = lead.company or "your team"
+    company = lead.company
     offering = org.product_description or "taking that off people's plates"
     signer = _signer_name(org)
 
+    if company:
+        subject_1 = f"the busywork at {company}"
+        scale_line = f"Most teams the size of {company} lose a chunk of every week"
+        pattern_line = f"The pattern I see at companies like {company}:"
+        followup_line = (f"If it ever comes up at {company}, just reply to "
+                         f"this and I'll pick it back up.")
+    else:
+        subject_1 = "the busywork piling up"
+        scale_line = "Most people juggling this alone lose a chunk of every week"
+        pattern_line = "The pattern I see again and again:"
+        followup_line = ("If it ever comes up again, just reply to this "
+                         "and I'll pick it back up.")
+
     if step == 1:
         return {
-            "subject": f"the busywork at {company}"[:50],
+            "subject": subject_1[:50],
             "body": (
                 f"Hi {first},\n\n"
                 f"You don't know me, so I'll get to the point.\n\n"
-                f"Most teams the size of {company} lose a chunk of every week "
-                f"to work nobody would miss if it did itself. That's what we "
-                f"work on: {offering}.\n\n"
+                f"{scale_line} to work nobody would miss if it did itself. "
+                f"That's what we work on: {offering}.\n\n"
                 f"Is that actually a problem on your side, or have you got it "
                 f"handled?\n\n{signer}"
             ),
@@ -747,9 +765,9 @@ def _template_step(lead: Lead, org: Organization, step: int) -> dict:
             "body": (
                 f"Hi {first},\n\n"
                 f"Nothing to sell you today.\n\n"
-                f"The pattern I see at companies like {company}: the busywork "
+                f"{pattern_line} the busywork "
                 f"gets treated as the cost of doing business, so nobody ever "
-                f"puts it on a roadmap. The teams that do treat it as a "
+                f"puts it on a roadmap. The ones that do treat it as a "
                 f"system to fix get the week back.\n\n"
                 f"Useful either way.\n\n{signer}"
             ),
@@ -760,7 +778,6 @@ def _template_step(lead: Lead, org: Organization, step: int) -> dict:
             f"Hi {first},\n\n"
             f"I've emailed a few times and not heard back, which usually "
             f"means the timing's wrong. So I'll leave it there.\n\n"
-            f"If it ever comes up at {company}, just reply to this and I'll "
-            f"pick it back up.\n\n{signer}"
+            f"{followup_line}\n\n{signer}"
         ),
     }
