@@ -1,7 +1,8 @@
+import base64
 import logging
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select
@@ -90,6 +91,11 @@ class OrgSettingsIn(BaseModel):
     auto_reply_enabled: bool | None = None
     research_enabled: bool | None = None
     example_emails: str | None = Field(default=None, max_length=8000)
+    step_templates: dict[str, str] | None = None
+    email_signature_enabled: bool | None = None
+    signature_title: str | None = Field(default=None, max_length=255)
+    signature_phone: str | None = Field(default=None, max_length=64)
+    signature_website: str | None = Field(default=None, max_length=255)
 
 
 class OrgOut(BaseModel):
@@ -105,6 +111,12 @@ class OrgOut(BaseModel):
     auto_reply_enabled: bool
     research_enabled: bool
     example_emails: str | None
+    step_templates: dict[str, str] | None
+    email_signature_enabled: bool
+    signature_title: str | None
+    signature_phone: str | None
+    signature_website: str | None
+    logo_data_url: str | None
     email_verified: bool = True
 
 
@@ -311,9 +323,11 @@ def revoke_key(key_id: int, user: User = Depends(get_current_user),
     db.commit()
 
 
-@router.get("/me", response_model=OrgOut)
-def me(org: Organization = Depends(get_current_org),
-       user: User = Depends(get_current_user)):
+def _org_out(org: Organization, email_verified: bool = True) -> OrgOut:
+    logo_data_url = None
+    if org.logo_image and org.logo_content_type:
+        logo_data_url = (f"data:{org.logo_content_type};base64,"
+                         + base64.b64encode(org.logo_image).decode())
     return OrgOut(
         id=org.id, name=org.name, sender_name=org.sender_name,
         sales_rep_email=org.sales_rep_email,
@@ -325,8 +339,20 @@ def me(org: Organization = Depends(get_current_org),
         auto_reply_enabled=org.auto_reply_enabled,
         research_enabled=org.research_enabled,
         example_emails=org.example_emails,
-        email_verified=user.email_verified,
+        step_templates=org.step_templates,
+        email_signature_enabled=org.email_signature_enabled,
+        signature_title=org.signature_title,
+        signature_phone=org.signature_phone,
+        signature_website=org.signature_website,
+        logo_data_url=logo_data_url,
+        email_verified=email_verified,
     )
+
+
+@router.get("/me", response_model=OrgOut)
+def me(org: Organization = Depends(get_current_org),
+       user: User = Depends(get_current_user)):
+    return _org_out(org, email_verified=user.email_verified)
 
 
 @router.patch("/org", response_model=OrgOut)
@@ -362,17 +388,75 @@ def update_org_settings(
         org.research_enabled = request.research_enabled
     if request.example_emails is not None:
         org.example_emails = request.example_emails
+    if request.step_templates is not None:
+        org.step_templates = request.step_templates
+    if request.email_signature_enabled is not None:
+        org.email_signature_enabled = request.email_signature_enabled
+    if request.signature_title is not None:
+        org.signature_title = request.signature_title
+    if request.signature_phone is not None:
+        org.signature_phone = request.signature_phone
+    if request.signature_website is not None:
+        org.signature_website = request.signature_website
     db.commit()
     db.refresh(org)
-    return OrgOut(
-        id=org.id, name=org.name, sender_name=org.sender_name,
-        sales_rep_email=org.sales_rep_email,
-        score_threshold=org.score_threshold,
-        product_description=org.product_description,
-        email_footer=org.email_footer,
-        knowledge_base=org.knowledge_base,
-        timezone=org.timezone,
-        auto_reply_enabled=org.auto_reply_enabled,
-        research_enabled=org.research_enabled,
-        example_emails=org.example_emails,
-    )
+    return _org_out(org, email_verified=user.email_verified)
+
+
+MAX_LOGO_BYTES = 300 * 1024
+
+_IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_image_content_type(data: bytes) -> str | None:
+    """Identify an image by its magic bytes rather than trusting the
+    client-supplied Content-Type header."""
+    for signature, content_type in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return content_type
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+@router.post("/org/logo", response_model=OrgOut)
+async def upload_org_logo(
+    file: UploadFile,
+    org: Organization = Depends(get_current_org),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload a logo to embed inline in outreach emails once the branded
+    signature is enabled. Validated by magic bytes, not the client-supplied
+    content type."""
+    data = await file.read()
+    if len(data) > MAX_LOGO_BYTES:
+        raise HTTPException(status_code=400,
+                            detail=f"Logo too large (max {MAX_LOGO_BYTES // 1024} KB)")
+    content_type = _sniff_image_content_type(data)
+    if content_type is None:
+        raise HTTPException(status_code=400,
+                            detail="Unrecognized image format (use PNG, JPEG, GIF, or WEBP)")
+    org.logo_image = data
+    org.logo_content_type = content_type
+    db.commit()
+    db.refresh(org)
+    return _org_out(org, email_verified=user.email_verified)
+
+
+@router.delete("/org/logo", response_model=OrgOut)
+def delete_org_logo(
+    org: Organization = Depends(get_current_org),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    org.logo_image = None
+    org.logo_content_type = None
+    db.commit()
+    db.refresh(org)
+    return _org_out(org, email_verified=user.email_verified)

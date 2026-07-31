@@ -232,3 +232,42 @@ def test_forgot_password_still_returns_ok_if_email_send_fails(
                                 json={"email": "owner@acme-sales.io"})
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"fake png data"
+
+
+def test_upload_logo_stores_and_returns_data_url(client):
+    response = client.post(
+        "/auth/org/logo", files={"file": ("logo.png", io.BytesIO(PNG_BYTES), "image/png")})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["logo_data_url"].startswith("data:image/png;base64,")
+
+    me = client.get("/auth/me").json()
+    assert me["logo_data_url"] == data["logo_data_url"]
+
+
+def test_upload_logo_rejects_non_image_bytes(client):
+    """Validated by magic bytes, not the client-supplied Content-Type —
+    this claims to be a PNG but isn't one."""
+    response = client.post(
+        "/auth/org/logo", files={"file": ("logo.png", io.BytesIO(b"not an image"), "image/png")})
+    assert response.status_code == 400
+    assert "format" in response.json()["detail"].lower()
+
+
+def test_upload_logo_rejects_oversized_file(client):
+    huge = b"\x89PNG\r\n\x1a\n" + b"x" * (350 * 1024)
+    response = client.post(
+        "/auth/org/logo", files={"file": ("logo.png", io.BytesIO(huge), "image/png")})
+    assert response.status_code == 400
+    assert "too large" in response.json()["detail"].lower()
+
+
+def test_delete_logo_clears_it(client):
+    client.post(
+        "/auth/org/logo", files={"file": ("logo.png", io.BytesIO(PNG_BYTES), "image/png")})
+    response = client.delete("/auth/org/logo")
+    assert response.status_code == 200
+    assert response.json()["logo_data_url"] is None

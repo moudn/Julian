@@ -7,6 +7,7 @@ moves the lead out of that state and silences the rest of the sequence
 automatically.
 """
 
+import html as html_lib
 import logging
 import random
 import re
@@ -38,6 +39,45 @@ DEFAULT_FOOTER = "\n\n--\nIf you'd rather not hear from me again, just reply \"n
 
 class SendingError(Exception):
     pass
+
+
+def build_signature(org: Organization) -> tuple[str, str]:
+    """Render the org's structured signature fields into (html, plain).
+
+    Structured, not raw HTML the org pastes in — there's nothing to
+    sanitize, and the output is always well-formed. Only non-empty fields
+    produce a line; the company name always comes from org.name (the whole
+    point is the email reads as genuinely from the organization).
+    """
+    name = (org.sender_name or "").strip()
+    title = (org.signature_title or "").strip()
+    phone = (org.signature_phone or "").strip()
+    website = (org.signature_website or "").strip()
+    company = (org.name or "").strip()
+    role = f"{title} at {company}" if title and company else (title or company)
+
+    plain_lines = [line for line in (name, role, phone, website) if line]
+    plain = "\n\n--\n" + "\n".join(plain_lines) if plain_lines else ""
+
+    html_lines = []
+    if name:
+        html_lines.append(f"<strong>{html_lib.escape(name)}</strong>")
+    if role:
+        html_lines.append(html_lib.escape(role))
+    if phone:
+        html_lines.append(html_lib.escape(phone))
+    if website:
+        url = website if website.startswith(("http://", "https://")) else f"https://{website}"
+        html_lines.append(f'<a href="{html_lib.escape(url)}">{html_lib.escape(website)}</a>')
+    if org.logo_image and org.logo_content_type:
+        html_lines.append(f'<img src="cid:logo" alt="{html_lib.escape(company)}" '
+                          'style="max-height:60px;margin-top:4px">')
+    html = "<div>" + "<br>".join(html_lines) + "</div>" if html_lines else ""
+    return html, plain
+
+
+def _html_footer(footer: str) -> str:
+    return f"<div>{html_lib.escape(footer).replace(chr(10), '<br>')}</div>" if footer else ""
 
 # Deliverability guardrails: new orgs ramp up slowly (Gmail flags sudden
 # volume from quiet accounts), and nothing sends outside local business hours.
@@ -228,6 +268,13 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
         _notify_google_broken(db, org)
         return {"sent": 0, "skipped": 0, "errors": [f"google revoked: {exc}"]}
     footer = org.email_footer if org.email_footer is not None else DEFAULT_FOOTER
+    sig_html = sig_text = None
+    if org.email_signature_enabled:
+        sig_html, sig_plain = build_signature(org)
+        sig_text = (sig_plain or "") + (footer or "")
+        sig_html = (sig_html or "") + _html_footer(footer or "")
+        if not sig_html:
+            sig_html = None  # nothing to render — stay on the plain-only path
 
     failed = 0
     for message in due:
@@ -240,8 +287,13 @@ def run_send_cycle(db: Session, org: Organization, sender=None) -> dict:
         if sent >= remaining_today:
             break  # cap reached; the rest stays queued for tomorrow
         try:
-            sender.send(to=lead.email, subject=message.subject,
-                        body=message.body + (footer or ""))
+            if sig_html is not None:
+                sender.send(to=lead.email, subject=message.subject, body=message.body,
+                            signature_html=sig_html, signature_text=sig_text,
+                            logo_bytes=org.logo_image, logo_content_type=org.logo_content_type)
+            else:
+                sender.send(to=lead.email, subject=message.subject,
+                            body=message.body + (footer or ""))
             # Capture the Gmail thread this outreach landed in so reply
             # polling can scope to it instead of a blanket sender search.
             if lead.gmail_thread_id is None:

@@ -240,6 +240,35 @@ def test_example_emails_flow_into_generation_prompt(client):
     assert any("Saw your launch" in p for p in captured_prompts)
 
 
+def test_step_templates_apply_only_to_their_own_step(client):
+    """Per-step template guidance should reach the prompt for that specific
+    step and no other."""
+    from app.deps import get_llm_adapter
+    from app.main import app
+
+    captured_prompts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        captured_prompts.append(body["messages"][-1]["content"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(
+            {"subject": "Quick one", "body": "Draft text. Julian"})}}]})
+
+    adapter = OpenRouterAdapter(
+        api_key="test-key", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    app.dependency_overrides[get_llm_adapter] = lambda: adapter
+
+    client.patch("/auth/org", json={
+        "step_templates": {"1": "Open by referencing their recent funding round."},
+    })
+    lead_id = _scored_lead(client)
+    client.post(f"/leads/{lead_id}/generate_sequence")
+
+    assert len(captured_prompts) == 4
+    assert "recent funding round" in captured_prompts[0]
+    assert all("recent funding round" not in p for p in captured_prompts[1:])
+
+
 def test_product_description_flows_into_drafts(client):
     client.patch("/auth/org", json={
         "product_description": "We build payroll software for restaurants",

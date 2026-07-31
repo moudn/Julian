@@ -9,6 +9,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -100,6 +101,23 @@ class Organization(Base):
     # containing only "---". Fed to the LLM as style examples so generated
     # drafts sound like this sender rather than a generic template.
     example_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Per-step structural guidance (keyed "1".."4", matching STEP_GUIDANCE)
+    # the LLM should follow for that step's angle/structure — the model
+    # still writes fresh, personalized wording per lead.
+    step_templates: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Branded HTML signature, appended to outreach emails between the body
+    # and the compliance footer. Off by default so existing orgs' sends are
+    # unaffected. Structured fields (not raw HTML) so there's nothing to
+    # sanitize — Julian renders these into the signature itself.
+    email_signature_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    signature_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    signature_phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    signature_website: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Raw image bytes + content type, embedded inline (cid:) in the HTML
+    # signature — no object storage exists, so this stays in the DB row.
+    logo_image: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    logo_content_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Stripe billing state (subscription_status mirrors Stripe's values;
     # "none" until the org completes checkout)

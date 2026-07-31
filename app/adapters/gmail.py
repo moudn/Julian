@@ -6,11 +6,11 @@ the Google OAuth connection the tenant already made for Calendar.
 """
 
 import base64
-from email.message import EmailMessage
 from typing import Callable
 
 import httpx
 
+from app.adapters.mime import build_email_message
 from app.config import get_settings
 
 
@@ -146,12 +146,20 @@ class GmailSenderAdapter:
         # Gmail conversation a lead's reply-polling should be scoped to.
         self.last_thread_id: str | None = None
 
-    def send(self, to: str, subject: str, body: str) -> str:
-        """Send a plain-text email as the connected account; returns Gmail id."""
-        message = EmailMessage()
+    def send(self, to: str, subject: str, body: str, *,
+             signature_html: str | None = None, signature_text: str | None = None,
+             logo_bytes: bytes | None = None, logo_content_type: str | None = None) -> str:
+        """Send an email as the connected account; returns Gmail id.
+
+        Plain text unless signature_html is given, in which case the email
+        is a multipart/alternative with an HTML branded signature (and an
+        inline logo if supplied) alongside a plain-text fallback.
+        """
+        message = build_email_message(
+            body, signature_html=signature_html, signature_text=signature_text,
+            logo_bytes=logo_bytes, logo_content_type=logo_content_type)
         message["To"] = to
         message["Subject"] = subject
-        message.set_content(body)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
         response = GmailReaderAdapter._request_with_auth_retry(

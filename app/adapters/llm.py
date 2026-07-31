@@ -545,6 +545,16 @@ class OpenRouterAdapter:
                 + "\n---\n".join(examples)
             )
 
+        template_line = ""
+        step_template = (getattr(org, "step_templates", None) or {}).get(str(step))
+        if step_template:
+            template_line = (
+                f"Template structure for THIS step, provided by the sender — "
+                f"follow its angle and structure, but write fresh, "
+                f"personalized wording for THIS recipient (never reuse it "
+                f"verbatim, never reuse it across leads):\n{step_template}"
+            )
+
         prior = ""
         if prior_bodies:
             prior = "Earlier emails in this sequence (do not repeat their "
@@ -567,6 +577,7 @@ class OpenRouterAdapter:
             sender_line,
             recipient_line,
             style_line,
+            template_line,
             research_line,
             prior,
             redo,

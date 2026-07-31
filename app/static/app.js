@@ -14,6 +14,9 @@ let justLostIds = new Set();
 // Same idea for individual sequence steps flipping to SENT, keyed by
 // "<leadId>-<step>" so the lead detail page can flash the one that just went.
 let previousSequenceStatus = {};
+// Apollo search results live only in memory — there's no server-side
+// search history endpoint, so a route() re-run can't refetch them.
+let apolloResults = [];
 
 async function checkForStateChanges() {
   if (!localStorage.getItem("julian_key")) return;
@@ -249,6 +252,40 @@ const ui = {
       route();
     } catch (e) { oops(e); }
   },
+  async searchApollo(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = Object.fromEntries(new FormData(form));
+    const split = (v) => (v || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const payload = {
+      titles: split(data.titles),
+      locations: split(data.locations),
+      organization_domains: split(data.organization_domains),
+      keywords: data.keywords || undefined,
+      save_to_db: !!form.querySelector('[name="save_to_db"]')?.checked,
+    };
+    Object.keys(payload).forEach((k) => {
+      if (Array.isArray(payload[k]) && payload[k].length === 0) delete payload[k];
+    });
+    const button = form.querySelector('button[type="submit"]');
+    const originalHtml = button?.innerHTML;
+    if (button) {
+      button.classList.add("busy");
+      button.innerHTML = `<span class="spinner-inline"></span>${esc(button.dataset.busyLabel || "Working…")}`;
+    }
+    try {
+      const result = await api("/apollo/search_people", { method: "POST", json: payload });
+      apolloResults = result.people || [];
+      renderApolloResults();
+      toast(`Found ${result.count}`
+            + (payload.save_to_db ? ` — saved ${result.saved_lead_ids.length} to Leads.` : "."));
+    } catch (e) {
+      oops(e);
+    } finally {
+      if (button) { button.classList.remove("busy"); button.innerHTML = originalHtml; }
+    }
+    return false;
+  },
   async scoreAll() {
     try {
       const results = await api("/leads/score_all", { method: "POST" });
@@ -306,6 +343,16 @@ const ui = {
     const data = Object.fromEntries(new FormData(event.target));
     data.auto_reply_enabled = event.target.querySelector('[name="auto_reply_enabled"]')?.checked ?? undefined;
     data.research_enabled = event.target.querySelector('[name="research_enabled"]')?.checked ?? undefined;
+    data.email_signature_enabled = event.target.querySelector('[name="email_signature_enabled"]')?.checked ?? undefined;
+    const stepFields = ["step_template_1", "step_template_2", "step_template_3", "step_template_4"];
+    if (stepFields.some((f) => f in data)) {
+      const step_templates = {};
+      stepFields.forEach((f, i) => {
+        if (data[f]) step_templates[String(i + 1)] = data[f];
+        delete data[f];
+      });
+      data.step_templates = step_templates;
+    }
     Object.keys(data).forEach((k) => { if (data[k] === "" || data[k] === undefined) delete data[k]; });
     if (data.score_threshold) data.score_threshold = Number(data.score_threshold);
     try {
@@ -313,6 +360,24 @@ const ui = {
       toast("Settings saved.");
     } catch (e) { oops(e); }
     return false;
+  },
+  async uploadLogo(input) {
+    if (!input.files.length) return;
+    const body = new FormData();
+    body.append("file", input.files[0]);
+    try {
+      ORG = await api("/auth/org/logo", { method: "POST", body });
+      toast("Logo uploaded.");
+      route();
+    } catch (e) { oops(e); }
+    input.value = "";
+  },
+  async deleteLogo() {
+    try {
+      ORG = await api("/auth/org/logo", { method: "DELETE" });
+      toast("Logo removed.");
+      route();
+    } catch (e) { oops(e); }
   },
   async addRule(event) {
     event.preventDefault();
@@ -451,6 +516,51 @@ function wireCsvDropzone() {
     const file = e.dataTransfer?.files?.[0];
     if (file) ui.importCsvFile(file);
   });
+}
+
+routes.apollo = async () => {
+  $("#page").innerHTML = `
+    <div class="page-head"><h1>Find leads</h1></div>
+    <div class="card">
+      <p class="muted small">Search Apollo's contact database and pull matches straight into your leads.</p>
+      <form onsubmit="return ui.searchApollo(event)">
+        <div class="grid" style="grid-template-columns: 1fr 1fr">
+          <label>Titles (comma-separated)<input name="titles" placeholder="VP Sales, Head of Marketing"></label>
+          <label>Locations (comma-separated)<input name="locations" placeholder="London, Manchester"></label>
+          <label>Company domains (comma-separated)<input name="organization_domains" placeholder="acme.com"></label>
+          <label>Keywords<input name="keywords" placeholder="fintech"></label>
+        </div>
+        <label><input type="checkbox" name="save_to_db" checked style="width:auto">
+          Save matches to Leads automatically</label>
+        <button class="btn primary" data-busy-label="Searching…" type="submit">Search</button>
+      </form>
+    </div>
+    <div id="apollo-results"></div>`;
+  renderApolloResults();
+};
+
+function renderApolloResults() {
+  const el = $("#apollo-results");
+  if (!el) return;
+  if (!apolloResults.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `
+    <div class="card">
+      <h2>${apolloResults.length} result${apolloResults.length === 1 ? "" : "s"}</h2>
+      <table>
+        <tr><th>Name</th><th>Title</th><th>Company</th><th>Location</th><th>Email</th><th></th></tr>
+        ${apolloResults.map((p) => `
+          <tr>
+            <td><strong>${esc(p.name)}</strong></td>
+            <td>${esc(p.title || "—")}</td>
+            <td>${esc(p.company || "—")}</td>
+            <td>${esc(p.location || "—")}</td>
+            <td>${esc(p.email || "—")}</td>
+            <td>${p.linkedin_url
+              ? `<a href="${esc(safeHref(p.linkedin_url))}" target="_blank" rel="noopener">LinkedIn</a>`
+              : ""}</td>
+          </tr>`).join("")}
+      </table>
+    </div>`;
 }
 
 async function leadDetail(id) {
@@ -710,6 +820,16 @@ routes.settings = async () => {
             <label>Example emails (1-2 you've actually sent, so Julian's drafts sound like you —
               separate multiple examples with a line containing only ---)
               <textarea name="example_emails" rows="6" placeholder="Hi Jamie,&#10;&#10;...&#10;&#10;---&#10;&#10;Hi Sam,&#10;&#10;...">${esc(ORG.example_emails || "")}</textarea></label>
+            <p class="muted small" style="margin-bottom:4px">Per-step templates (optional) — guide the angle/structure of
+              a specific step; Julian still personalizes the wording per lead.</p>
+            <label>Step 1 — first touch
+              <textarea name="step_template_1" rows="3">${esc((ORG.step_templates || {})["1"] || "")}</textarea></label>
+            <label>Step 2 — bump (day 3)
+              <textarea name="step_template_2" rows="3">${esc((ORG.step_templates || {})["2"] || "")}</textarea></label>
+            <label>Step 3 — value-add (day 7)
+              <textarea name="step_template_3" rows="3">${esc((ORG.step_templates || {})["3"] || "")}</textarea></label>
+            <label>Step 4 — breakup (day 12)
+              <textarea name="step_template_4" rows="3">${esc((ORG.step_templates || {})["4"] || "")}</textarea></label>
             <label>Email footer — must include an opt-out line and your postal address
               (required by anti-spam law before Julian can send)
               <textarea name="email_footer" oninput="ui.checkFooterCompliance(this.value)"
@@ -727,6 +847,31 @@ routes.settings = async () => {
               is (off = he drafts it and you send)</label>
             <button class="btn primary" type="submit">Save</button>
           </form>
+        </div>
+        <div class="card"><h2>Email signature</h2>
+          <p class="muted small">Adds a branded sign-off (and logo, if uploaded) to every outreach
+            email so it reads as genuinely from your organization. Sits above the compliance footer.</p>
+          <form onsubmit="return ui.saveSettings(event)">
+            <label><input type="checkbox" name="email_signature_enabled" style="width:auto"
+              ${ORG.email_signature_enabled ? "checked" : ""}>
+              Use a branded signature on outreach emails</label>
+            <label>Job title
+              <input name="signature_title" value="${esc(ORG.signature_title || "")}" placeholder="Head of Sales"></label>
+            <label>Phone
+              <input name="signature_phone" value="${esc(ORG.signature_phone || "")}" placeholder="+44 7700 900123"></label>
+            <label>Website
+              <input name="signature_website" value="${esc(ORG.signature_website || "")}" placeholder="acme.com"></label>
+            <button class="btn primary" type="submit">Save</button>
+          </form>
+          <div style="margin-top:14px">
+            <label>Logo (PNG, JPEG, GIF, or WEBP — max 300KB)
+              <input type="file" accept="image/png,image/jpeg,image/gif,image/webp"
+                onchange="ui.uploadLogo(this)"></label>
+            <div id="logo-preview">${ORG.logo_data_url
+              ? `<img src="${esc(ORG.logo_data_url)}" alt="Logo" style="max-height:60px;display:block;margin:8px 0">
+                 <button class="btn ghost small" onclick="ui.deleteLogo()">Remove logo</button>`
+              : `<p class="muted small">No logo uploaded.</p>`}</div>
+          </div>
         </div>
         <div class="card"><h2>ICP scoring rules</h2>
           ${rules.length ? `<table>

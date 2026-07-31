@@ -6,8 +6,8 @@ whole workflow stays runnable in development without a mail server.
 
 import logging
 import smtplib
-from email.message import EmailMessage
 
+from app.adapters.mime import build_email_message
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,9 @@ class EmailSenderAdapter:
         self.settings = get_settings()
         self.sent: list[dict[str, str]] = []  # in-memory log, handy for dev/tests
 
-    def send(self, to: str, subject: str, body: str) -> None:
+    def send(self, to: str, subject: str, body: str, *,
+             signature_html: str | None = None, signature_text: str | None = None,
+             logo_bytes: bytes | None = None, logo_content_type: str | None = None) -> None:
         record = {"to": to, "subject": subject, "body": body}
         self.sent.append(record)
 
@@ -28,11 +30,12 @@ class EmailSenderAdapter:
                         "SMTP not configured)", to, subject, len(body))
             return
 
-        message = EmailMessage()
+        message = build_email_message(
+            body, signature_html=signature_html, signature_text=signature_text,
+            logo_bytes=logo_bytes, logo_content_type=logo_content_type)
         message["From"] = self.settings.smtp_from
         message["To"] = to
         message["Subject"] = subject
-        message.set_content(body)
 
         try:
             with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port) as smtp:

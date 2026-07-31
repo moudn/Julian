@@ -134,6 +134,50 @@ def test_send_cycle_uses_custom_footer(client, email_sender, monkeypatch):
     assert "1 Main St" in to_lead[0]["body"]
 
 
+def test_send_cycle_uses_branded_signature_when_enabled(client):
+    """When a branded signature is on, the footer moves out of the plain
+    body and into the signature trailer (both html and plain), which is
+    also where the compliance footer must now show up in either form."""
+    from app.database import SessionLocal
+    from app.models import Organization
+    from app.services import sending
+
+    client.patch("/auth/org", json={
+        "email_footer": "\n--\nAcme Inc, 1 Main St. Reply STOP to opt out.",
+        "email_signature_enabled": True,
+        "signature_title": "Head of Sales",
+        "signature_phone": "555-0100",
+    })
+    lead_id = _lead_with_sequence(client)
+    client.post(f"/leads/{lead_id}/activate_sequence")
+
+    captured = {}
+
+    class CapturingSender:
+        last_thread_id = None
+
+        def send(self, to, subject, body, **kwargs):
+            captured["to"] = to
+            captured["body"] = body
+            captured.update(kwargs)
+            return "msg-id"
+
+    db = SessionLocal()
+    try:
+        org = db.query(Organization).first()
+        result = sending.run_send_cycle(db, org, sender=CapturingSender())
+    finally:
+        db.close()
+
+    assert result["sent"] == 1
+    assert "Acme Inc" not in captured["body"]  # footer no longer baked into the body
+    assert captured["signature_html"] is not None
+    assert "Head of Sales" in captured["signature_html"]
+    assert "1 Main St" in captured["signature_html"]  # footer present in the html trailer too
+    assert "555-0100" in captured["signature_text"]
+    assert "1 Main St" in captured["signature_text"]
+
+
 def test_sequence_stops_when_lead_leaves_active_state(client):
     lead_id = _lead_with_sequence(client)
     client.post(f"/leads/{lead_id}/activate_sequence")
