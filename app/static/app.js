@@ -134,6 +134,12 @@ function route() {
     if (params.get("google") === "connected") {
       toast("Google connected — Julian can send and check your calendar.");
     }
+    if (params.get("billing") === "success") {
+      toast("Subscription started — you're all set.");
+      api("/auth/me").then((org) => { ORG = org; }).catch(() => {});
+    } else if (params.get("billing") === "cancelled") {
+      toast("Checkout cancelled — no charge was made.");
+    }
     history.replaceState(null, "", "#/" + segments.slice(1).join("/"));
   }
 
@@ -210,6 +216,12 @@ const ui = {
     try {
       const result = await api("/billing/checkout", { method: "POST", json: { plan } });
       window.open(result.checkout_url, "_blank");
+    } catch (e) { oops(e); }
+  },
+  async openBillingPortal() {
+    try {
+      const result = await api("/billing/portal", { method: "POST" });
+      window.open(result.portal_url, "_blank");
     } catch (e) { oops(e); }
   },
   async resendVerification() {
@@ -947,7 +959,8 @@ routes.settings = async () => {
                    plan, ${esc(billing.subscription_status)}${billing.current_period_end ? " · renews " + fmtDate(billing.current_period_end) : ""}</p>
                  ${billing.lead_limit != null
                    ? `<p class="muted small">${billing.leads_used} of ${billing.lead_limit} leads used this billing period.</p>`
-                   : ""}`
+                   : ""}
+                 <button class="btn small" onclick="ui.openBillingPortal()">Manage subscription</button>`
               : `<p>⚠️ No active subscription (${esc(billing.subscription_status)}).</p>
                  <div class="grid" style="grid-template-columns: repeat(${plans.length}, 1fr)">
                    ${plans.map((p) => `

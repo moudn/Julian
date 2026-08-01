@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from app.adapters.stripe_billing import (
     verify_webhook_signature,
 )
 from app.auth import get_current_org, get_current_user
+from app.config import get_settings
 from app.database import get_db
 from app.models import Organization, User
 from app.plans import PLANS
@@ -189,10 +191,11 @@ async def webhook(
 
 @router.get("/success")
 def success():
-    return {"message": "Subscription started — you're all set. "
-                       "Check GET /billing/status with your API key."}
+    base = get_settings().app_base_url.rstrip("/")
+    return RedirectResponse(url=f"{base}/app/#/settings?billing=success", status_code=303)
 
 
 @router.get("/cancelled")
 def cancelled():
-    return {"message": "Checkout cancelled — no charge was made."}
+    base = get_settings().app_base_url.rstrip("/")
+    return RedirectResponse(url=f"{base}/app/#/settings?billing=cancelled", status_code=303)

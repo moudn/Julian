@@ -304,3 +304,17 @@ def test_checkout_webhook_sets_plan_and_enforces_lead_quota(client, billing_on):
     status = client.get("/billing/status").json()
     assert status["leads_used"] == 25
     assert status["leads_remaining"] == 0
+
+
+# ---------- success/cancelled redirects ----------
+
+def test_success_redirects_into_app(client):
+    response = client.get("/billing/success", follow_redirects=False)
+    assert response.status_code == 303
+    assert "#/settings?billing=success" in response.headers["location"]
+
+
+def test_cancelled_redirects_into_app(client):
+    response = client.get("/billing/cancelled", follow_redirects=False)
+    assert response.status_code == 303
+    assert "#/settings?billing=cancelled" in response.headers["location"]
