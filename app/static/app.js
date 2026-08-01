@@ -206,9 +206,9 @@ const ui = {
     $("#app-view").classList.add("hidden");
     $("#auth-view").classList.remove("hidden");
   },
-  async checkout() {
+  async checkout(plan) {
     try {
-      const result = await api("/billing/checkout", { method: "POST" });
+      const result = await api("/billing/checkout", { method: "POST", json: { plan } });
       window.open(result.checkout_url, "_blank");
     } catch (e) { oops(e); }
   },
@@ -800,10 +800,18 @@ function footerChecklistHtml(footer) {
 
 routes.settings = async () => {
   ORG = ORG || await api("/auth/me");
-  const [google, billing, rules, suppressions] = await Promise.all([
+  // allSettled, not all: /icp/rules 402s without an active subscription —
+  // exactly the moment a customer needs to see the billing card to fix
+  // that. One gated call must not take down the whole page.
+  const results = (await Promise.allSettled([
     api("/integrations/google/status"), api("/billing/status"), api("/icp/rules"),
-    api("/suppressions"),
-  ]);
+    api("/suppressions"), api("/billing/plans"),
+  ])).map((r) => (r.status === "fulfilled" ? r.value : null));
+  const google = results[0] || { connected: false };
+  const billing = results[1] || { billing_enabled: false, subscription_status: "none" };
+  const rules = results[2] || [];
+  const suppressions = results[3] || [];
+  const plans = results[4] || [];
   $("#page").innerHTML = `
     <div class="page-head"><h1>Settings</h1></div>
     <div class="cols">
@@ -935,9 +943,21 @@ routes.settings = async () => {
           ${!billing.billing_enabled
             ? `<p class="muted small">Billing is not configured on this server (development mode — everything is unlocked).</p>`
             : billing.subscription_status === "active" || billing.subscription_status === "trialing"
-              ? `<p>✅ Subscription ${esc(billing.subscription_status)}${billing.current_period_end ? " · renews " + fmtDate(billing.current_period_end) : ""}</p>`
+              ? `<p>✅ ${esc(billing.plan ? plans.find((p) => p.id === billing.plan)?.label || billing.plan : "Subscription")}
+                   plan, ${esc(billing.subscription_status)}${billing.current_period_end ? " · renews " + fmtDate(billing.current_period_end) : ""}</p>
+                 ${billing.lead_limit != null
+                   ? `<p class="muted small">${billing.leads_used} of ${billing.lead_limit} leads used this billing period.</p>`
+                   : ""}`
               : `<p>⚠️ No active subscription (${esc(billing.subscription_status)}).</p>
-                 <button class="btn primary" onclick="ui.checkout()">Subscribe</button>`}
+                 <div class="grid" style="grid-template-columns: repeat(${plans.length}, 1fr)">
+                   ${plans.map((p) => `
+                     <div class="card" style="margin-bottom:0">
+                       <strong>${esc(p.label)}</strong>
+                       <div class="muted small">£${p.price_gbp}/mo · ${p.lead_limit} leads/mo</div>
+                       <button class="btn primary small" style="margin-top:8px"
+                         onclick="ui.checkout('${esc(p.id)}')">Choose</button>
+                     </div>`).join("")}
+                 </div>`}
         </div>
         <div class="card"><h2>Do-not-contact list</h2>
           <p class="muted small">Julian will never email these addresses, and

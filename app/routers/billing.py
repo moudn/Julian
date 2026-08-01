@@ -15,6 +15,7 @@ from app.adapters.stripe_billing import (
 from app.auth import get_current_org, get_current_user
 from app.database import get_db
 from app.models import Organization, User
+from app.plans import PLANS
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -49,30 +50,63 @@ class BillingStatusOut(BaseModel):
     billing_enabled: bool
     subscription_status: str
     current_period_end: datetime | None
+    plan: str | None
+    lead_limit: int | None
+    leads_used: int | None
+    leads_remaining: int | None
+
+
+class CheckoutIn(BaseModel):
+    plan: str
+
+
+class PlanOut(BaseModel):
+    id: str
+    label: str
+    lead_limit: int
+    price_gbp: int
+
+
+@router.get("/plans", response_model=list[PlanOut])
+def plans():
+    return [PlanOut(id=p.id, label=p.label, lead_limit=p.lead_limit, price_gbp=p.price_gbp)
+            for p in PLANS.values()]
 
 
 @router.get("/status", response_model=BillingStatusOut)
-def status(org: Organization = Depends(get_current_org)):
+def status(org: Organization = Depends(get_current_org), db: Session = Depends(get_db)):
+    from app.services.billing_quota import lead_quota_remaining, leads_used_this_period
+    plan = PLANS.get(org.plan or "")
     return BillingStatusOut(
         billing_enabled=billing_enabled(),
         subscription_status=org.subscription_status,
         current_period_end=org.current_period_end,
+        plan=org.plan,
+        lead_limit=plan.lead_limit if plan else None,
+        leads_used=leads_used_this_period(db, org) if plan else None,
+        leads_remaining=lead_quota_remaining(db, org),
     )
 
 
 @router.post("/checkout", response_model=CheckoutOut)
 def checkout(
+    request: CheckoutIn,
     org: Organization = Depends(get_current_org),
     user: User = Depends(get_current_user),
     stripe: StripeAdapter = Depends(get_stripe_adapter),
 ):
-    """Create a Stripe Checkout session; open the returned URL to subscribe."""
+    """Create a Stripe Checkout session for the given plan (starter/growth/
+    scale); open the returned URL to subscribe."""
     if not billing_enabled():
         raise HTTPException(status_code=503, detail="Billing is not configured")
     if org.subscription_status in ACTIVE_STATUSES:
         raise HTTPException(status_code=409, detail="Subscription is already active")
+    if request.plan not in PLANS:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown plan {request.plan!r} — choose one of "
+                                   f"{', '.join(PLANS)}")
     try:
-        url = stripe.create_checkout_session(org.id, user.email)
+        url = stripe.create_checkout_session(org.id, user.email, request.plan)
     except StripeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return CheckoutOut(checkout_url=url)
@@ -114,6 +148,9 @@ async def webhook(
         if org is not None:
             org.stripe_customer_id = obj.get("customer")
             org.stripe_subscription_id = obj.get("subscription")
+            plan = obj.get("metadata", {}).get("plan")
+            if plan in PLANS:
+                org.plan = plan
             # Provisional — checkout.session doesn't carry the subscription's
             # real status (e.g. "trialing" when a trial period is active).
             # The subscription.created event fired right alongside this one
@@ -134,6 +171,13 @@ async def webhook(
                 org.subscription_status = "canceled"
             else:
                 org.subscription_status = obj.get("status", org.subscription_status)
+            plan = obj.get("metadata", {}).get("plan")
+            if plan in PLANS:
+                org.plan = plan
+            period_start = obj.get("current_period_start")
+            if period_start:
+                org.current_period_start = datetime.fromtimestamp(
+                    int(period_start), tz=timezone.utc)
             period_end = obj.get("current_period_end")
             if period_end:
                 org.current_period_end = datetime.fromtimestamp(

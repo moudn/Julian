@@ -134,6 +134,14 @@ class Organization(Base):
     current_period_end: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    current_period_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Plan id from app/plans.py (starter/growth/scale), set from the
+    # checkout/subscription webhook metadata. None means no plan on record
+    # (billing disabled, or a subscription not yet synced) — lead-quota
+    # enforcement treats that as unlimited rather than blocking.
+    plan: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

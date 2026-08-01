@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
+from app.plans import PLANS
 
 
 class StripeError(Exception):
@@ -54,19 +55,27 @@ class StripeAdapter:
             raise StripeError(f"Stripe API request failed: {exc}") from exc
         return response.json()
 
-    def create_checkout_session(self, org_id: int, customer_email: str) -> str:
-        """Create a subscription Checkout session; returns the payment URL."""
+    def create_checkout_session(self, org_id: int, customer_email: str, plan: str) -> str:
+        """Create a subscription Checkout session for the given plan
+        (app/plans.py); returns the payment URL."""
+        if plan not in PLANS:
+            raise StripeError(f"Unknown plan {plan!r}")
         settings = get_settings()
-        if not settings.stripe_price_id:
-            raise StripeError("STRIPE_PRICE_ID is not configured")
+        price_id = getattr(settings, f"stripe_price_id_{plan}", "")
+        if not price_id:
+            raise StripeError(f"STRIPE_PRICE_ID_{plan.upper()} is not configured")
         params = {
             "mode": "subscription",
-            "line_items[0][price]": settings.stripe_price_id,
+            "line_items[0][price]": price_id,
             "line_items[0][quantity]": "1",
             "client_reference_id": str(org_id),
             "customer_email": customer_email,
             "success_url": settings.billing_success_url,
             "cancel_url": settings.billing_cancel_url,
+            # Echoed back on every webhook event for this session/subscription
+            # so we know which plan (and therefore lead quota) was purchased.
+            "metadata[plan]": plan,
+            "subscription_data[metadata][plan]": plan,
         }
         if settings.trial_period_days > 0:
             params["subscription_data[trial_period_days]"] = str(settings.trial_period_days)

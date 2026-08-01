@@ -31,7 +31,9 @@ def billing_on(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_123")
     monkeypatch.setattr(settings, "stripe_webhook_secret", WEBHOOK_SECRET)
-    monkeypatch.setattr(settings, "stripe_price_id", "price_123")
+    monkeypatch.setattr(settings, "stripe_price_id_starter", "price_starter_123")
+    monkeypatch.setattr(settings, "stripe_price_id_growth", "price_growth_123")
+    monkeypatch.setattr(settings, "stripe_price_id_scale", "price_scale_123")
     return settings
 
 
@@ -161,22 +163,27 @@ def test_checkout_returns_stripe_url(client, billing_on, monkeypatch):
                             client=httpx.Client(transport=httpx.MockTransport(handler)))
     app.dependency_overrides[get_stripe_adapter] = lambda: adapter
 
-    response = client.post("/billing/checkout")
+    response = client.post("/billing/checkout", json={"plan": "growth"})
     assert response.status_code == 200
     assert response.json()["checkout_url"].startswith("https://checkout.stripe.com/")
     assert captured["path"].endswith("/checkout/sessions")
     assert "mode=subscription" in captured["body"]
-    assert "price_123" in captured["body"]
+    assert "price_growth_123" in captured["body"]
 
 
 def test_checkout_requires_billing_enabled(client):
-    assert client.post("/billing/checkout").status_code == 503
+    assert client.post("/billing/checkout", json={"plan": "growth"}).status_code == 503
+
+
+def test_checkout_rejects_unknown_plan(client, billing_on):
+    response = client.post("/billing/checkout", json={"plan": "enterprise"})
+    assert response.status_code == 422
 
 
 def test_adapter_requires_configuration():
     adapter = StripeAdapter(api_key="", client=httpx.Client())
     with pytest.raises(StripeError, match="not configured"):
-        adapter.create_checkout_session(1, "a@b.c")
+        adapter.create_checkout_session(1, "a@b.c", "growth")
 
 
 # ---------- trial period ----------
@@ -195,7 +202,7 @@ def test_checkout_includes_trial_period(client, billing_on, monkeypatch):
                             client=httpx.Client(transport=httpx.MockTransport(handler)))
     app.dependency_overrides[get_stripe_adapter] = lambda: adapter
 
-    client.post("/billing/checkout")
+    client.post("/billing/checkout", json={"plan": "growth"})
     assert "subscription_data%5Btrial_period_days%5D=30" in captured["body"]
 
 
@@ -213,7 +220,7 @@ def test_zero_trial_period_omits_it_from_checkout(client, billing_on, monkeypatc
                             client=httpx.Client(transport=httpx.MockTransport(handler)))
     app.dependency_overrides[get_stripe_adapter] = lambda: adapter
 
-    client.post("/billing/checkout")
+    client.post("/billing/checkout", json={"plan": "growth"})
     assert "trial_period_days" not in captured["body"]
 
 
@@ -245,3 +252,55 @@ def test_subscription_created_reflects_trialing_status(client, billing_on):
     status = client.get("/billing/status").json()
     assert status["subscription_status"] == "trialing"
     assert client.get("/leads").status_code == 200  # trialing counts as active
+
+
+# ---------- plans + lead quota ----------
+
+def test_plans_endpoint_lists_all_three(client):
+    response = client.get("/billing/plans")
+    assert response.status_code == 200
+    ids = {p["id"] for p in response.json()}
+    assert ids == {"starter", "growth", "scale"}
+
+
+def test_checkout_webhook_sets_plan_and_enforces_lead_quota(client, billing_on):
+    import io
+    org_id = client.get("/auth/me").json()["id"]
+
+    payload = json.dumps({
+        "type": "checkout.session.completed",
+        "data": {"object": {"client_reference_id": str(org_id),
+                            "customer": "cus_5", "subscription": "sub_5",
+                            "metadata": {"plan": "starter"}}},
+    }).encode()
+    client.post("/billing/webhook", content=payload,
+               headers={"Stripe-Signature": sign(payload)})
+
+    period_start = int(time.time()) - 86400
+    period_end = int(time.time()) + 29 * 86400
+    payload = json.dumps({
+        "type": "customer.subscription.created",
+        "data": {"object": {"id": "sub_5", "customer": "cus_5", "status": "active",
+                            "metadata": {"plan": "starter"},
+                            "current_period_start": period_start,
+                            "current_period_end": period_end}},
+    }).encode()
+    client.post("/billing/webhook", content=payload,
+               headers={"Stripe-Signature": sign(payload)})
+
+    status = client.get("/billing/status").json()
+    assert status["plan"] == "starter"
+    assert status["lead_limit"] == 25
+    assert status["leads_used"] == 0
+    assert status["leads_remaining"] == 25
+
+    # Starter is capped at 25 leads/month — import 30, only 25 should land
+    rows = "name,email\n" + "\n".join(f"Lead {i},lead{i}@x.com" for i in range(30))
+    result = client.post("/leads/import",
+                         files={"file": ("l.csv", io.BytesIO(rows.encode()), "text/csv")}).json()
+    assert result["imported"] == 25
+    assert any("plan limit" in e.lower() for e in result["errors"])
+
+    status = client.get("/billing/status").json()
+    assert status["leads_used"] == 25
+    assert status["leads_remaining"] == 0

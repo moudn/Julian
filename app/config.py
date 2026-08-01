@@ -61,7 +61,10 @@ class Settings(BaseSettings):
     # entirely (all endpoints open; good for development)
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
-    stripe_price_id: str = ""
+    # One Stripe Price ID per plan in app/plans.py (Starter/Growth/Scale)
+    stripe_price_id_starter: str = ""
+    stripe_price_id_growth: str = ""
+    stripe_price_id_scale: str = ""
     stripe_api_base: str = "https://api.stripe.com/v1"
     # Free trial length for every new subscription. 0 disables the trial.
     trial_period_days: int = 30

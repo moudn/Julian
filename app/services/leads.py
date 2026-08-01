@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Lead
+from app.models import Lead, Organization
 
 # CSV headers (case-insensitive) accepted for each Lead field
 CSV_FIELD_ALIASES: dict[str, list[str]] = {
@@ -75,11 +75,12 @@ def _recognised_columns(fieldnames) -> bool:
     return bool(present & (known | NAME_COLUMNS))
 
 
-def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int, list[str]]:
+def import_leads_csv(db: Session, content: bytes, org: Organization) -> tuple[int, int, list[str]]:
     """Parse a CSV file and create leads for one organization.
 
     Returns (imported, skipped, errors). Suppressed addresses (prior
-    opt-outs) are never re-imported.
+    opt-outs) are never re-imported. Stops early if the org's plan lead
+    quota for this billing period is reached.
     """
     if len(content) > MAX_CSV_BYTES:
         return 0, 0, [f"File too large (max {MAX_CSV_BYTES // (1024 * 1024)} MB)"]
@@ -98,13 +99,20 @@ def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int
             + ", ".join(f or "" for f in reader.fieldnames)[:200]
         ]
 
+    from app.services.billing_quota import lead_quota_remaining
     from app.services.suppression import is_suppressed
 
+    org_id = org.id
+    remaining = lead_quota_remaining(db, org)
     imported, skipped, errors = 0, 0, []
     seen_emails: set[str] = set()
     for line_number, row in enumerate(reader, start=2):
         if line_number - 1 > MAX_CSV_ROWS:
             errors.append(f"Stopped at {MAX_CSV_ROWS} rows (file truncated)")
+            break
+        if remaining is not None and imported >= remaining:
+            errors.append(f"Stopped at {imported} leads — this billing period's plan "
+                         f"limit was reached. Upgrade your plan to import more.")
             break
         fields = _extract_fields(row)
         if not fields.get("name"):
@@ -131,10 +139,13 @@ def import_leads_csv(db: Session, content: bytes, org_id: int) -> tuple[int, int
     return imported, skipped, errors
 
 
-def upsert_lead(db: Session, data: dict[str, Any], org_id: int) -> Lead:
+def upsert_lead(db: Session, data: dict[str, Any], org_id: int) -> tuple[Lead, bool]:
     """Create or update one org's Lead from normalized external data (e.g. Apollo).
 
-    Matches on email when available; enrichment never clears existing values.
+    Matches on email when available; enrichment never clears existing
+    values. Returns (lead, created) — created is False for a re-enrichment
+    of an existing lead, which callers should not count against a lead
+    quota since no new lead was actually added.
     """
     lead = None
     if data.get("email"):
@@ -145,6 +156,7 @@ def upsert_lead(db: Session, data: dict[str, Any], org_id: int) -> Lead:
             Lead.name == data["name"], Lead.domain == data["domain"],
             Lead.org_id == org_id))
 
+    created = lead is None
     if lead is None:
         lead = Lead(**{key: value for key, value in data.items() if value is not None},
                     org_id=org_id)
@@ -156,4 +168,4 @@ def upsert_lead(db: Session, data: dict[str, Any], org_id: int) -> Lead:
 
     db.commit()
     db.refresh(lead)
-    return lead
+    return lead, created

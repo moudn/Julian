@@ -41,7 +41,7 @@ async def import_csv(
 ):
     if file.filename and not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Expected a .csv file")
-    imported, skipped, errors = import_leads_csv(db, await file.read(), org.id)
+    imported, skipped, errors = import_leads_csv(db, await file.read(), org)
     return CSVImportResult(imported=imported, skipped=skipped, errors=errors)
 
 
