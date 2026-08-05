@@ -295,6 +295,81 @@ def test_score_all_endpoint_uses_the_bulk_path(client):
     assert all(r["score"] == 70 and r["state"] == "SCORED" for r in results)
 
 
+# ---------- reply polling is bounded ----------
+
+class CountingReader:
+    """Fails loudly if polled — these tests assert it is NOT called."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def get_thread_messages(self, thread_id):
+        self.calls += 1
+        return []
+
+    def list_message_ids(self, query, max_results=20):
+        self.calls += 1
+        return []
+
+    def get_message(self, message_id):  # pragma: no cover - never reached
+        raise AssertionError("should not fetch a message")
+
+
+def _sent_lead(client) -> int:
+    """A lead with one genuinely SENT outreach step."""
+    _activated_lead(client)
+    db = SessionLocal()
+    try:
+        org = db.get(Organization, client.get("/auth/me").json()["id"])
+        sending.run_send_cycle(db, org, sender=CapturingSender())
+    finally:
+        db.close()
+    return 1
+
+
+def _poll(client) -> CountingReader:
+    from app.services.replies import poll_replies
+    reader = CountingReader()
+    db = SessionLocal()
+    try:
+        org = db.get(Organization, client.get("/auth/me").json()["id"])
+        poll_replies(db, org, reader)
+    finally:
+        db.close()
+    return reader
+
+
+def test_lead_with_nothing_sent_is_not_polled(client):
+    """An OUTREACH_PENDING lead has no conversation to reply to, but used
+    to cost a broad Gmail search every single tick."""
+    client.post("/leads/import",
+                files={"file": ("l.csv", io.BytesIO(CSV.encode()), "text/csv")})
+    client.post("/icp/rules", json={"name": "VP", "field": "title",
+                                    "operator": "contains", "value": "VP", "weight": 60})
+    client.post("/leads/1/score")
+    client.post("/leads/1/generate_sequence")  # OUTREACH_PENDING, never activated
+    assert _poll(client).calls == 0
+
+
+def test_recently_contacted_lead_is_polled(client):
+    _sent_lead(client)
+    assert _poll(client).calls == 1
+
+
+def test_long_dormant_lead_is_not_polled(client):
+    from app.services.replies import REPLY_POLL_WINDOW_DAYS
+    _sent_lead(client)
+    db = SessionLocal()
+    try:
+        message = db.query(OutreachMessage).filter_by(
+            lead_id=1, status=MessageStatus.SENT).one()
+        message.sent_at = utcnow() - timedelta(days=REPLY_POLL_WINDOW_DAYS + 1)
+        db.commit()
+    finally:
+        db.close()
+    assert _poll(client).calls == 0
+
+
 # ---------- cron endpoint ----------
 
 def test_cron_secret_rejects_a_wrong_value(client, monkeypatch):

@@ -28,9 +28,13 @@ def require_active_subscription(
 ) -> Organization:
     """Gate for product endpoints. A no-op while billing is disabled (dev)."""
     if billing_enabled() and org.subscription_status not in ACTIVE_STATUSES:
+        # Reaches the customer verbatim — the dashboard renders this string
+        # in a banner and an inline message, so it has to read like product
+        # copy, not like an API reference.
         raise HTTPException(
             status_code=402,
-            detail="No active subscription. Start one via POST /billing/checkout.",
+            detail="Julian is paused because there's no active subscription. "
+                   "Pick a plan in Settings to start him up again.",
         )
     return org
 
@@ -66,11 +70,16 @@ class PlanOut(BaseModel):
     label: str
     lead_limit: int
     price_gbp: int
+    # Same for every plan, but carried per-plan so the picker can label
+    # each card without a second request. 0 means no trial.
+    trial_days: int
 
 
 @router.get("/plans", response_model=list[PlanOut])
 def plans():
-    return [PlanOut(id=p.id, label=p.label, lead_limit=p.lead_limit, price_gbp=p.price_gbp)
+    trial_days = get_settings().trial_period_days
+    return [PlanOut(id=p.id, label=p.label, lead_limit=p.lead_limit,
+                    price_gbp=p.price_gbp, trial_days=trial_days)
             for p in PLANS.values()]
 
 

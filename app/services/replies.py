@@ -45,6 +45,11 @@ logger = logging.getLogger(__name__)
 
 OOO_POSTPONE_DAYS = 7
 
+# How long after the last send a lead's thread is still worth polling.
+# Generous relative to how long cold outreach actually takes to get a
+# reply — the point is to bound the work, not to cut conversations off.
+REPLY_POLL_WINDOW_DAYS = 45
+
 # States in which an inbound reply gets full triage treatment
 TRIAGEABLE_STATES = {
     LeadState.SEQUENCE_ACTIVE,
@@ -457,16 +462,46 @@ def _notify_rep(notifier: EmailSenderAdapter, org: Organization, lead: Lead,
     )
 
 
+def _pollable_leads(db: Session, org: Organization) -> list[Lead]:
+    """Leads worth spending a Gmail call on this tick.
+
+    The cycle runs every minute and made one API call per candidate lead,
+    so a few hundred leads meant a few hundred calls a minute — against a
+    per-user rate limit, mostly to re-read threads that hadn't changed.
+    Two conditions bound it without changing what actually gets triaged:
+
+    * Something must have been sent. A lead with no SENT step has no
+      conversation to reply to, and would take the expensive broad
+      `from:<address>` search every tick forever.
+    * That send must be recent. Replies to cold outreach effectively stop
+      after a few weeks; past the window the thread would otherwise be
+      re-fetched for the life of the account.
+    """
+    cutoff = utcnow() - timedelta(days=REPLY_POLL_WINDOW_DAYS)
+    last_sent = (
+        select(OutreachMessage.lead_id,
+               func.max(OutreachMessage.sent_at).label("last_sent_at"))
+        .where(OutreachMessage.org_id == org.id,
+               OutreachMessage.status == MessageStatus.SENT)
+        .group_by(OutreachMessage.lead_id)
+        .subquery()
+    )
+    return list(db.scalars(
+        select(Lead)
+        .join(last_sent, last_sent.c.lead_id == Lead.id)
+        .where(Lead.org_id == org.id,
+               Lead.state.in_(list(TRIAGEABLE_STATES)),
+               Lead.email.is_not(None),
+               last_sent.c.last_sent_at >= cutoff)
+    ).all())
+
+
 def poll_replies(db: Session, org: Organization, reader: GmailReaderAdapter,
                  llm: OpenRouterAdapter | None = None,
                  notifier: EmailSenderAdapter | None = None,
                  outbound_sender=None) -> dict:
     """Fetch new inbound mail from active leads and run each through triage."""
-    leads = db.scalars(select(Lead).where(
-        Lead.org_id == org.id,
-        Lead.state.in_(list(TRIAGEABLE_STATES)),
-        Lead.email.is_not(None),
-    )).all()
+    leads = _pollable_leads(db, org)
 
     processed, duplicates, errors = 0, 0, []
     for lead in leads:

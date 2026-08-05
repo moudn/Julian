@@ -62,7 +62,11 @@ async function api(path, options = {}) {
   if (!response.ok) {
     let detail = response.statusText;
     try { detail = (await response.json()).detail || detail; } catch (e) {}
-    throw new Error(detail);
+    const error = new Error(detail);
+    // The billing banner is already on screen saying this, with the button
+    // that fixes it — a toast saying it a third time is just noise.
+    error.coveredByBanner = response.status === 402;
+    throw error;
   }
   if (response.status === 204) return null;
   return response.json();
@@ -89,7 +93,10 @@ function toast(message, isError = false) {
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.add("hidden"), 3500);
 }
-const oops = (e) => toast(e.message || String(e), true);
+const oops = (e) => {
+  if (e && e.coveredByBanner) return;
+  toast(e.message || String(e), true);
+};
 function showBanner(show) { $("#billing-banner").classList.toggle("hidden", !show); }
 
 const STATE_DOTS = {
@@ -962,13 +969,19 @@ routes.settings = async () => {
                    : ""}
                  <button class="btn small" onclick="ui.openBillingPortal()">Manage subscription</button>`
               : `<p>⚠️ No active subscription (${esc(billing.subscription_status)}).</p>
+                 ${plans[0] && plans[0].trial_days
+                   ? `<p class="muted small">Every plan starts with ${Number(plans[0].trial_days)}
+                        days free — you won't be charged until the trial ends, and you can
+                        cancel any time before then.</p>`
+                   : ""}
                  <div class="grid" style="grid-template-columns: repeat(${plans.length}, 1fr)">
                    ${plans.map((p) => `
                      <div class="card" style="margin-bottom:0">
                        <strong>${esc(p.label)}</strong>
-                       <div class="muted small">£${p.price_gbp}/mo · ${p.lead_limit} leads/mo</div>
+                       <div class="muted small">£${Number(p.price_gbp)}/mo · ${Number(p.lead_limit)} leads/mo</div>
                        <button class="btn primary small" style="margin-top:8px"
-                         onclick="ui.checkout('${esc(p.id)}')">Choose</button>
+                         onclick="ui.checkout('${esc(p.id)}')">${p.trial_days
+                           ? `Start ${Number(p.trial_days)}-day free trial` : "Choose"}</button>
                      </div>`).join("")}
                  </div>`}
         </div>

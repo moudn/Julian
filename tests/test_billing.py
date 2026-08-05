@@ -263,6 +263,25 @@ def test_plans_endpoint_lists_all_three(client):
     assert ids == {"starter", "growth", "scale"}
 
 
+def test_plans_carry_the_trial_length(client, monkeypatch):
+    """The picker labels each plan with the trial, so the strongest reason
+    to click isn't hidden until the customer reaches Stripe."""
+    monkeypatch.setattr(get_settings(), "trial_period_days", 30)
+    plans = client.get("/billing/plans").json()
+    assert all(p["trial_days"] == 30 for p in plans)
+
+    monkeypatch.setattr(get_settings(), "trial_period_days", 0)
+    assert all(p["trial_days"] == 0 for p in client.get("/billing/plans").json())
+
+
+def test_gate_message_is_customer_facing(client, billing_on):
+    """This string is rendered verbatim in the dashboard, so it must not
+    read like API documentation."""
+    detail = client.get("/leads").json()["detail"]
+    assert "POST" not in detail and "/billing" not in detail
+    assert "subscription" in detail.lower()
+
+
 def test_checkout_webhook_sets_plan_and_enforces_lead_quota(client, billing_on):
     import io
     org_id = client.get("/auth/me").json()["id"]
