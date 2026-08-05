@@ -387,9 +387,11 @@ def _notify_google_broken(db: Session, org: Organization) -> None:
 
 
 def run_send_cycle_all_orgs(db: Session) -> dict:
-    """Background-loop entry point: process every organization."""
+    """Background-loop entry point: process every subscribed organization."""
+    from app.services.subscription import active_orgs
+
     totals = {"sent": 0, "skipped": 0, "failed": 0, "errors": []}
-    for org in db.scalars(select(Organization)).all():
+    for org in active_orgs(db):
         result = run_send_cycle(db, org)
         totals["sent"] += result["sent"]
         totals["skipped"] += result["skipped"]

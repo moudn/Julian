@@ -18,7 +18,7 @@ from app.schemas import (
 from app.routers.billing import require_active_subscription
 from app.services.leads import import_leads_csv
 from app.services.outreach import OutreachError, generate_sequence
-from app.services.scoring import score_lead
+from app.services.scoring import score_lead, score_leads
 from app.services.sending import SendingError, activate_sequence
 from app.state_machine import transition
 
@@ -166,15 +166,13 @@ def score_all(
     org: Organization = Depends(get_current_org),
     llm: OpenRouterAdapter = Depends(get_llm_adapter),
 ):
-    results = []
     leads = db.scalars(select(Lead).where(
         Lead.state == LeadState.NEW, Lead.org_id == org.id)).all()
-    for lead in leads:
-        lead = score_lead(db, lead, org, llm=llm)
-        results.append(ScoreResult(lead_id=lead.id, score=lead.score,
-                                   ai_fit_score=lead.ai_fit_score,
-                                   threshold=org.score_threshold, state=lead.state))
-    return results
+    scored = score_leads(db, list(leads), org, llm=llm)
+    return [ScoreResult(lead_id=lead.id, score=lead.score,
+                        ai_fit_score=lead.ai_fit_score,
+                        threshold=org.score_threshold, state=lead.state)
+            for lead in scored]
 
 
 @router.post("/{lead_id}/generate_message", response_model=MessageDraftOut)

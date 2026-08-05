@@ -8,6 +8,8 @@ happens to keep such a host from sleeping at all, since every hit counts
 as inbound traffic.
 """
 
+import hmac
+
 from fastapi import APIRouter, Header, HTTPException
 
 from app.config import get_settings
@@ -21,7 +23,7 @@ def run_cycle(x_cron_secret: str = Header(default="")):
     if not settings.cron_secret:
         raise HTTPException(status_code=503,
                             detail="CRON_SECRET is not configured — this endpoint is disabled")
-    if x_cron_secret != settings.cron_secret:
+    if not hmac.compare_digest(x_cron_secret, settings.cron_secret):
         raise HTTPException(status_code=403, detail="Invalid or missing X-Cron-Secret header")
 
     from app.services.agent_cycle import run_agent_cycle

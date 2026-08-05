@@ -312,17 +312,16 @@ class OpenRouterAdapter:
         """Backward-compatible single first-touch body."""
         return self.generate_step(lead, org, step=1)["body"]
 
-    def score_fit(self, lead: Lead, org: Organization) -> int | None:
-        """LLM-judged 0-100 fit score, to supplement rule-based ICP scoring
-        with judgment rules can't capture (reading a title/company/research
-        holistically rather than matching a single field). Returns None
-        with no API key or on any failure — unlike drafting, there's no
-        sensible heuristic substitute for genuine judgment, so callers
-        should just skip the AI contribution rather than fake one.
+    @staticmethod
+    def fit_context(lead: Lead, org: Organization) -> str:
+        """The prompt body describing one lead, built from ORM attributes.
+
+        Split out from score_fit so a bulk caller can build every context
+        up front on the request thread and then fire the HTTP calls
+        concurrently — reading these attributes can emit lazy-load SQL, and
+        a SQLAlchemy Session must never be touched from a worker thread.
         """
-        if not self.api_key:
-            return None
-        context = "\n\n".join(filter(None, [
+        return "\n\n".join(filter(None, [
             f"Prospect: {lead.name}"
             + (f", {lead.title}" if lead.title else "")
             + (f" at {lead.company}" if lead.company else "")
@@ -334,6 +333,23 @@ class OpenRouterAdapter:
             f"Researched facts about the prospect's company:\n{lead.research_notes}"
             if getattr(lead, "research_notes", None) else "",
         ]))
+
+    def score_fit(self, lead: Lead, org: Organization) -> int | None:
+        """LLM-judged 0-100 fit score, to supplement rule-based ICP scoring
+        with judgment rules can't capture (reading a title/company/research
+        holistically rather than matching a single field). Returns None
+        with no API key or on any failure — unlike drafting, there's no
+        sensible heuristic substitute for genuine judgment, so callers
+        should just skip the AI contribution rather than fake one.
+        """
+        if not self.api_key:
+            return None
+        return self.score_fit_context(self.fit_context(lead, org))
+
+    def score_fit_context(self, context: str, lead_id: object = "?") -> int | None:
+        """score_fit's network half — safe to call from a worker thread."""
+        if not self.api_key:
+            return None
         try:
             response = self._client.post(
                 f"{self.base_url}/chat/completions",
@@ -351,12 +367,12 @@ class OpenRouterAdapter:
             content = response.json()["choices"][0]["message"]["content"]
         except (httpx.HTTPError, KeyError, IndexError) as exc:
             logger.warning("score_fit: OpenRouter call failed for lead %s: %s",
-                           getattr(lead, "id", "?"), exc)
+                           lead_id, exc)
             return None
         match = re.search(r"\d+", content)
         if not match:
             logger.warning("score_fit: no number found in response for lead "
-                           "%s: %r", getattr(lead, "id", "?"), content)
+                           "%s: %r", lead_id, content)
             return None
         return max(0, min(100, int(match.group())))
 

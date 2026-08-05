@@ -18,10 +18,9 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import Organization, User
 from app.plans import PLANS
+from app.services.subscription import ACTIVE_STATUSES
 
 router = APIRouter(prefix="/billing", tags=["billing"])
-
-ACTIVE_STATUSES = {"active", "trialing"}
 
 
 def require_active_subscription(

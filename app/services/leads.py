@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Lead, Organization
+from app.models import Lead, Organization, SuppressedEmail
 
 # CSV headers (case-insensitive) accepted for each Lead field
 CSV_FIELD_ALIASES: dict[str, list[str]] = {
@@ -49,7 +49,23 @@ def _extract_fields(row: dict[str, str]) -> dict[str, Any]:
             fields["company_size"] = int(fields["company_size"])
         except ValueError:
             del fields["company_size"]
+    if fields.get("email"):
+        fields["email"] = normalize_email(fields["email"])
     return fields
+
+
+def normalize_email(email: str | None) -> str | None:
+    """Lowercase an address before it is stored or compared.
+
+    Mailbox providers treat the local part case-insensitively in practice,
+    but the DB unique constraint and every `Lead.email ==` lookup are
+    case-sensitive on Postgres. Without this, "John@acme.com" and
+    "john@acme.com" import as two separate leads and the same human gets
+    two independent sequences — which is exactly the deliverability
+    accident an outreach product cannot afford. Suppression already
+    lowercases on both read and write, so this brings leads in line.
+    """
+    return email.strip().lower() if email else email
 
 
 MAX_CSV_BYTES = 2 * 1024 * 1024
@@ -100,12 +116,26 @@ def import_leads_csv(db: Session, content: bytes, org: Organization) -> tuple[in
         ]
 
     from app.services.billing_quota import lead_quota_remaining
-    from app.services.suppression import is_suppressed
 
     org_id = org.id
     remaining = lead_quota_remaining(db, org)
+
+    # Both membership checks below used to run a query per row — 2 queries
+    # x up to MAX_CSV_ROWS. The org's suppression list and existing lead
+    # addresses are small enough to hold in memory for the duration of one
+    # import, which turns the whole thing into two queries total.
+    suppressed = {
+        (email or "").lower()
+        for email in db.scalars(select(SuppressedEmail.email).where(
+            SuppressedEmail.org_id == org_id))
+    }
+    seen_emails = {
+        (email or "").lower()
+        for email in db.scalars(select(Lead.email).where(
+            Lead.org_id == org_id, Lead.email.is_not(None)))
+    }
+
     imported, skipped, errors = 0, 0, []
-    seen_emails: set[str] = set()
     for line_number, row in enumerate(reader, start=2):
         if line_number - 1 > MAX_CSV_ROWS:
             errors.append(f"Stopped at {MAX_CSV_ROWS} rows (file truncated)")
@@ -119,14 +149,12 @@ def import_leads_csv(db: Session, content: bytes, org: Organization) -> tuple[in
             skipped += 1
             errors.append(f"line {line_number}: missing name")
             continue
-        email = fields.get("email")
-        if email and is_suppressed(db, org_id, email):
+        email = fields.get("email")  # already lowercased by _extract_fields
+        if email and email in suppressed:
             skipped += 1
             errors.append(f"line {line_number}: {email} previously opted out")
             continue
-        if email and (email in seen_emails
-                      or db.scalar(select(Lead).where(
-                          Lead.email == email, Lead.org_id == org_id))):
+        if email and email in seen_emails:
             skipped += 1
             errors.append(f"line {line_number}: duplicate email {email}")
             continue
@@ -147,6 +175,10 @@ def upsert_lead(db: Session, data: dict[str, Any], org_id: int) -> tuple[Lead, b
     of an existing lead, which callers should not count against a lead
     quota since no new lead was actually added.
     """
+    data = dict(data)
+    if data.get("email"):
+        data["email"] = normalize_email(data["email"])
+
     lead = None
     if data.get("email"):
         lead = db.scalar(select(Lead).where(

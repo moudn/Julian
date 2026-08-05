@@ -512,9 +512,10 @@ def run_reply_cycle_all_orgs(db: Session) -> dict:
     """Background-loop entry point: poll Gmail for every connected org."""
     from app.adapters.google_oauth import GoogleAccessRevoked, get_valid_access_token
 
+    from app.services.subscription import active_orgs
+
     totals = {"processed": 0, "duplicates": 0, "errors": []}
-    orgs = db.scalars(select(Organization)).all()
-    for org in orgs:
+    for org in active_orgs(db):
         credential = db.scalar(select(GoogleCredential).where(
             GoogleCredential.org_id == org.id))
         if credential is None or credential.broken:
